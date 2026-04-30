@@ -1,0 +1,26 @@
+{
+  "name": "诈骗后与自我疗愈陪伴",
+  "short_name": "疗愈陪伴",
+  "description": "在浏览器中使用支持对话、日常恢复与成长记录。（当前图标为占位图，可自行替换正式应用图标）",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f4ef",
+  "theme_color": "#57534e",
+  "orientation": "portrait-primary",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icons/pwa-maskable-placeholder.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/pwa-maskable-placeholder.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

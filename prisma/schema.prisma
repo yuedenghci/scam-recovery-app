@@ -1,0 +1,256 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String           @id @default(cuid())
+  createdAt        DateTime         @default(now())
+  /// 登录用户名（唯一）
+  username         String           @unique
+  /// 使用 scrypt 派生的密码哈希，包含盐等信息
+  passwordHash     String
+  /// 性别（自由填写/枚举中文）
+  gender           String?
+  /// 年龄（为了前端更灵活，这里用字符串存储）
+  age              String?
+  /// 已获得的学历
+  education        String?
+  /// 工作类型（包括“学生”等自由填写）
+  jobType          String?
+  /// 被诈骗了多少钱（自由填写原文）
+  scammedAmount    String?
+  /// 什么时候发生的（自由填写原文）
+  scamWhen         String?
+  /// 诈骗类型（自由填写原文）
+  scamType         String?
+  profile          UserProfile?
+  messages         Message[]
+  currentStates    CurrentState[]
+  feedbackRecords  FeedbackRecord[]
+  dailyRecoveries  DailyRecovery[]
+  dailyRecoveryStatusLogs DailyRecoveryStatusLog[]
+  dailyRecoveryEventLogs  DailyRecoveryEventLog[]
+  recoveryProgressState   RecoveryProgressState?
+  recoveryProgressEvents  RecoveryProgressEvent[]
+  diaryEntries            DiaryEntry[]
+  progressLetters         ProgressLetter[]
+  onboardingDraft         OnboardingDraft?
+  supportContext          UserSupportContext?
+}
+
+/// onboarding 过程：题目进度、聊天快照、逐步审计（不等同于右侧最终设定）
+model OnboardingDraft {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  currentQuestionIndex Int      @default(0)
+  openingAcknowledged  Boolean  @default(false)
+  isCompleted          Boolean  @default(false)
+  /// 前端聊天消息数组 JSON，用于刷新后恢复左侧对话
+  chatSnapshot         Json?
+  /// { questionId, rawAnswer, aiSummary, revisionCount, skipped, confirmed }[]
+  stepAudit            Json      @default("[]")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// 右侧 8 模块：正式 support 优先读取的最终支持设定（手动编辑优先于自动合并）
+model UserSupportContext {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  scamSituation    String   @default("")
+  scamImpact       String   @default("")
+  personality      String   @default("")
+  likedActivities  String   @default("")
+  expectedRole     String   @default("")
+  toneStyle        String   @default("")
+  proactiveLevel   String   @default("")
+  helpGoals        String   @default("")
+  /// { "scamSituation": true, ... } 标记用户曾手动编辑的模块，服务端合并时跳过覆盖
+  manualModuleFlags Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserProfile {
+  id                            String   @id @default(cuid())
+  userId                        String   @unique
+  preferredSupportFocus         String[]
+  preferredToneStyle            String
+  responseSpecificityPreference String
+  contactPreference             String
+  contactTimeWindow             String?
+  contactFrequency              String?
+  comfortingActivities          String[]
+  comfortingActivitiesOther     String?
+  updatedAt                     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Message {
+  id               String           @id @default(cuid())
+  userId           String
+  role             String
+  content          String
+  /// LLM 为日常恢复提取的单条可执行小步建议；仅对部分 assistant 回复有值
+  suggestedAction String?
+  createdAt        DateTime         @default(now())
+  feedbackRecords  FeedbackRecord[]
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CurrentState {
+  id        String   @id @default(cuid())
+  userId    String
+  emotional String?
+  physical  String?
+  spatial   String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model FeedbackRecord {
+  id                   String   @id @default(cuid())
+  userId               String
+  messageId            String?
+  feedbackSource       String
+  selectedReason       String?
+  otherText            String?
+  assistantReplyText   String
+  currentStateSnapshot String?
+  llmNote              String?
+  createdAt            DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model DailyRecovery {
+  id              String   @id @default(cuid())
+  userId          String
+  /// 原始选择的恢复领域（例如「睡眠」「吃饭」）
+  recoveryDomain  String
+  /// 如果当时选择的是「其他」，这里记录实际填写的自定义名称
+  customDomain    String?
+  /// 用户填写的当前困难说明
+  difficultyNote  String
+  /// 当前对这个小任务的文案（可随着「换一个任务」「重新设置」变化）
+  currentTaskText String?
+  /// 轻量提醒：是否希望在本地时间点附近记得这件事（暂不实现推送，仅存档）
+  reminderEnabled Boolean  @default(false)
+  reminderTime    String?
+  /// 用户「试过」后可选：想再轻轻放在心上多少天（用户自填天数，非精确日程）
+  continuationDays Int?
+  continuationReminderEnabled Boolean?
+  continuationReminderTime String?
+  /// 若为 true，就不再展示「要小步再继续几天？」的提示
+  continuationPromptDismissed Boolean @default(false)
+  /// 软删除标记，避免真的丢失记录
+  isDeleted       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  statusLogs  DailyRecoveryStatusLog[]
+  eventLogs   DailyRecoveryEventLog[]
+}
+
+model DailyRecoveryStatusLog {
+  id              String   @id @default(cuid())
+  userId          String
+  dailyRecoveryId String
+  /// "done" | "partial" | "skipped"
+  status          String
+  createdAt       DateTime @default(now())
+
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task DailyRecovery @relation(fields: [dailyRecoveryId], references: [id], onDelete: Cascade)
+}
+
+model DailyRecoveryEventLog {
+  id              String   @id @default(cuid())
+  userId          String
+  dailyRecoveryId String?
+  /// 例如："click_add_task" | "generate_candidates" | "select_task" | "swap_task" | "reset_task" | "delete_task"
+  eventType       String
+  /// 用于记录候选文案、建议等上下文
+  detail          Json?
+  createdAt       DateTime @default(now())
+
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task DailyRecovery? @relation(fields: [dailyRecoveryId], references: [id])
+}
+
+model RecoveryProgressState {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  totalScore            Float    @default(0)
+  currentStage          Int      @default(0)
+  lastLetterGeneratedAt DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RecoveryProgressEvent {
+  id         String   @id @default(cuid())
+  userId     String
+  eventType  String
+  scoreDelta Float
+  eventDate  DateTime
+  eventDay   String
+  sourceId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, eventDate])
+  @@index([userId, eventType, eventDay])
+  @@index([userId, createdAt])
+}
+
+model DiaryEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  content   String
+  entryDay  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entryDay])
+  @@index([userId, createdAt])
+}
+
+model ProgressLetter {
+  id          String   @id @default(cuid())
+  userId      String
+  periodStart DateTime
+  periodEnd   DateTime
+  title       String
+  body        String
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  readAt      DateTime?
+  context     Json?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead, createdAt])
+}

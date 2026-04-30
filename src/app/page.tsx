@@ -1,12 +1,26 @@
-export default function Home() {
-  return (
-    <main className="min-h-screen flex items-center justify-center p-6">
-      <div className="max-w-xl text-center">
-        <h1 className="text-3xl font-bold mb-4">My Scam Recovery Support App</h1>
-        <p className="text-gray-600">
-          The project is running successfully.
-        </p>
-      </div>
-    </main>
-  );
+import { redirect } from "next/navigation";
+
+import { prisma } from "@/lib/prisma";
+import { getCurrentUserId } from "@/lib/auth";
+
+export default async function HomePage() {
+  const userId = await getCurrentUserId();
+
+  // 未登录用户：统一进入登录页
+  if (!userId) {
+    redirect("/login");
+  }
+
+  // 已登录用户：根据 onboarding 完成情况分流
+  // 这里用 any 是为了兼容当前生成的 Prisma Client 类型定义
+  const draft = await (prisma as any).onboardingDraft.findUnique({
+    where: { userId },
+    select: { isCompleted: true },
+  });
+
+  if (!draft || !draft.isCompleted) {
+    redirect("/onboarding");
+  }
+
+  redirect("/chat");
 }
