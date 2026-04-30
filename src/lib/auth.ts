@@ -17,7 +17,8 @@ export async function setLoginSession(userId: string): Promise<void> {
   store.set(SESSION_COOKIE_NAME, userId, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    //secure: process.env.NODE_ENV === "production",
+    secure: false,
     path: "/",
     maxAge: ONE_MONTH_IN_SECONDS,
   });
