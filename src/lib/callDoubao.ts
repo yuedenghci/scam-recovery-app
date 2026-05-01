@@ -1,6 +1,7 @@
 import OpenAI from "openai";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
-type DoubaoGenerationContext = {
+export type DoubaoGenerationContext = {
   systemPrompt: string;
   panelFeedbackNotes: string[];
   explicitFeedbackNotes: string[];
@@ -23,11 +24,6 @@ export type DoubaoChatOutcome = {
 function formatNonEmpty(parts: Array<string | undefined | null>): string {
   return parts.map((p) => (p ?? "").trim()).filter(Boolean).join("；");
 }
-
-const REPLY_ONLY_INSTRUCTION = `
-你只需要输出给用户的自然对话回复正文。
-除回复正文外不要输出任何其它文字、Markdown 或 JSON。
-`;
 
 function sanitizeReplyParagraph(text: string): string {
   const firstParagraph = text.split(/\n{2,}/)[0].trim();
@@ -59,9 +55,7 @@ function parseDoubaoJsonPayload(raw: string): DoubaoChatOutcome | null {
   }
 }
 
-export async function callDoubao(
-  context: DoubaoGenerationContext,
-): Promise<DoubaoChatOutcome> {
+function validateDoubaoEnv(): { apiKey: string; baseURL: string; modelName: string } {
   const apiKey = process.env.ARK_API_KEY;
   const baseURL = process.env.ARK_BASE_URL;
   const model = process.env.ARK_MODEL;
@@ -73,8 +67,15 @@ export async function callDoubao(
   if (missing.length > 0) {
     throw new Error(`Missing env vars: ${missing.join(", ")}`);
   }
-  const modelName = model as string;
 
+  return {
+    apiKey: apiKey!,
+    baseURL: baseURL!,
+    modelName: model!,
+  };
+}
+
+function buildDoubaoMessages(context: DoubaoGenerationContext): ChatCompletionMessageParam[] {
   const state = context.currentState;
   const stateText = state
     ? formatNonEmpty([
@@ -103,10 +104,49 @@ export async function callDoubao(
     explicitNotesText ? `近期文字中明确反馈的总结 notes：\n- ${explicitNotesText}` : "",
     panelNotesText ? `近期反馈面板总结 notes：\n- ${panelNotesText}` : "",
     stateText ? `用户当前状态：${stateText}` : "",
-    `用户刚刚说的话：${context.latestUserMessage.trim()}`
+    `用户刚刚说的话：${context.latestUserMessage.trim()}`,
   ]
     .filter(Boolean)
     .join("\n");
+
+  return [
+    { role: "system", content: context.systemPrompt },
+    ...context.chatHistory.map(
+      (m): ChatCompletionMessageParam => ({
+        role: m.role,
+        content: m.content,
+      }),
+    ),
+    { role: "user", content: prompt },
+  ];
+}
+
+/**
+ * Normalizes a full model completion string (non-streaming or concatenated stream)
+ * to the same `reply` shape as `callDoubao`.
+ */
+export function normalizeDoubaoStreamedReply(replyBlock: string): DoubaoChatOutcome {
+  const trimmed = replyBlock.trim();
+  if (!trimmed) {
+    throw new Error("Doubao returned empty reply");
+  }
+
+  const parsed = parseDoubaoJsonPayload(trimmed);
+  if (parsed) {
+    return parsed;
+  }
+
+  console.warn("callDoubao: JSON parse failed, falling back to plain text only");
+  return {
+    reply: sanitizeReplyParagraph(trimmed),
+  };
+}
+
+export async function callDoubao(
+  context: DoubaoGenerationContext,
+): Promise<DoubaoChatOutcome> {
+  const { apiKey, baseURL, modelName } = validateDoubaoEnv();
+  const messages = buildDoubaoMessages(context);
 
   const client = new OpenAI({
     apiKey,
@@ -115,11 +155,7 @@ export async function callDoubao(
 
   const completion = await client.chat.completions.create({
     model: modelName,
-    messages: [
-      { role: "system", content: context.systemPrompt },
-      ...context.chatHistory,
-      { role: "user", content: prompt },
-    ],
+    messages,
     temperature: 0.4,
     max_tokens: 384,
   });
@@ -129,13 +165,23 @@ export async function callDoubao(
     throw new Error("Doubao returned empty reply");
   }
 
-  const parsed = parseDoubaoJsonPayload(replyBlock);
-  if (parsed) {
-    return parsed;
-  }
+  return normalizeDoubaoStreamedReply(replyBlock);
+}
 
-  console.warn("callDoubao: JSON parse failed, falling back to plain text only");
-  return {
-    reply: sanitizeReplyParagraph(replyBlock),
-  };
+export async function createDoubaoStream(context: DoubaoGenerationContext) {
+  const { apiKey, baseURL, modelName } = validateDoubaoEnv();
+  const messages = buildDoubaoMessages(context);
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL,
+  });
+
+  return client.chat.completions.create({
+    model: modelName,
+    messages,
+    temperature: 0.4,
+    max_tokens: 384,
+    stream: true,
+  });
 }

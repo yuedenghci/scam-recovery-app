@@ -32,8 +32,8 @@ export function ProgressPlantAndLetters({
   hasUnread: boolean;
   onOpenLetters: () => void;
   onOpenLatestUnread: () => void;
-  /** inline：输入法旁紧凑展示；floating：沿用原有尺寸（桌面角标等）。 */
-  density?: "floating" | "inline";
+  /** inline：输入法旁紧凑展示；composer：移动端底栏并排，树苗更大可见；floating：沿用原有尺寸（桌面角标等）。 */
+  density?: "floating" | "inline" | "composer";
 }) {
   const stageIndex = Math.min(4, Math.max(0, Math.round(stage)));
   const primaryPlantSrc = STAGE_IMAGE_MAP[stageIndex];
@@ -49,6 +49,17 @@ export function ProgressPlantAndLetters({
   const floatingShell = "relative h-[11.75rem] w-[8.5rem] sm:h-[13rem] sm:w-[9.25rem]";
   const inlineShell =
     "relative flex h-[3.25rem] min-h-[44px] w-[2.9375rem] min-w-[44px] shrink-0 items-end justify-center overflow-visible pb-px";
+  /** 底栏并排：左侧预留加宽以容纳约 2× 可视树苗，仍与输入栏底对齐 */
+  const composerShell =
+    "relative flex h-[80px] w-[min(7.5rem,30vw)] min-w-[6.75rem] max-w-[8.5rem] shrink-0 items-end justify-center overflow-visible";
+
+  const useComposerMotion = density === "composer";
+  const plantFloatCls = useComposerMotion
+    ? "animate-[plantFloatComposer_5.6s_ease-in-out_infinite]"
+    : "animate-[plantFloat_5.6s_ease-in-out_infinite]";
+  const plantSwayCls = useComposerMotion
+    ? "animate-[plantSwayComposer_7.4s_ease-in-out_infinite]"
+    : "animate-[plantSway_7.4s_ease-in-out_infinite]";
 
   const core = (
     <>
@@ -59,8 +70,10 @@ export function ProgressPlantAndLetters({
         className="group absolute inset-0 flex cursor-pointer items-end justify-center rounded-3xl transition-transform active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-400/60"
       >
         <span className="pointer-events-none relative block select-none" aria-hidden>
-          <span className="block h-[11.25rem] w-[7.25rem] drop-shadow-[0_10px_24px_rgba(68,94,74,0.16)] animate-[plantFloat_5.6s_ease-in-out_infinite] sm:h-[12.5rem] sm:w-[8rem]">
-            <span className="block h-full w-full origin-bottom animate-[plantSway_7.4s_ease-in-out_infinite]">
+          <span
+            className={`block h-[11.25rem] w-[7.25rem] drop-shadow-[0_10px_24px_rgba(68,94,74,0.16)] ${plantFloatCls} sm:h-[12.5rem] sm:w-[8rem]`}
+          >
+            <span className={`block h-full w-full origin-bottom ${plantSwayCls}`}>
               <img
                 src={plantSrc}
                 alt=""
@@ -68,7 +81,11 @@ export function ProgressPlantAndLetters({
                 onError={() => {
                   if (plantSrc !== fallbackPlantSrc) setPlantSrc(fallbackPlantSrc);
                 }}
-                className="h-full w-full object-contain"
+                className={
+                  useComposerMotion
+                    ? "h-full w-full object-contain [clip-path:inset(5px_0_0_0)]"
+                    : "h-full w-full object-contain"
+                }
               />
             </span>
           </span>
@@ -110,6 +127,15 @@ export function ProgressPlantAndLetters({
             transform: translateY(-2px);
           }
         }
+        @keyframes plantFloatComposer {
+          0%,
+          100% {
+            transform: translateY(0px);
+          }
+          50% {
+            transform: translateY(-6px);
+          }
+        }
         @keyframes plantSway {
           0%,
           100% {
@@ -117,6 +143,15 @@ export function ProgressPlantAndLetters({
           }
           50% {
             transform: rotate(1.8deg);
+          }
+        }
+        @keyframes plantSwayComposer {
+          0%,
+          100% {
+            transform: rotate(-3.2deg);
+          }
+          50% {
+            transform: rotate(3.2deg);
           }
         }
         @keyframes butterflyHover {
@@ -145,6 +180,17 @@ export function ProgressPlantAndLetters({
     return (
       <div className={inlineShell}>
         <div className="pointer-events-auto relative h-[11.75rem] w-[8.5rem] origin-bottom scale-[0.34] translate-y-[2px]">
+          {core}
+        </div>
+      </div>
+    );
+  }
+
+  if (density === "composer") {
+    return (
+      <div className={composerShell}>
+        {/* scale≈0.78（约为原 0.39 的两倍），底对齐、向上舒展；clip-path 裁掉素材顶端多余细线 */}
+        <div className="pointer-events-auto relative h-[11.75rem] w-[8.5rem] origin-bottom scale-[0.78] translate-y-[6px] sm:translate-y-[5px]">
           {core}
         </div>
       </div>

@@ -1,13 +1,28 @@
 import { buildGenerationContext } from "@/lib/buildGenerationContext";
-import { callDoubao } from "@/lib/callDoubao";
+import {
+  createDoubaoStream,
+  normalizeDoubaoStreamedReply,
+} from "@/lib/callDoubao";
 import { detectExplicitFeedback } from "@/lib/extractExplicitFeedback";
 import { extractActionableRecoveryStep } from "@/lib/extractActionableRecoveryStep";
 import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { summarizeFeedbackNote } from "@/lib/summarizeFeedbackNote";
-type FeedbackNoteRecord = { feedbackSource: string; llmNote: string | null };
+
+const encoder = new TextEncoder();
+
+function encodeSse(event: string, data: unknown) {
+  return encoder.encode(
+    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+  );
+}
 
 export async function POST(request: Request) {
+  const requestStartedAt = Date.now();
+  const logChatTiming = (label: string) => {
+    console.log(`[chat] ${label}`, Date.now() - requestStartedAt);
+  };
+
   try {
     let body: unknown;
     try {
@@ -15,7 +30,7 @@ export async function POST(request: Request) {
     } catch {
       return Response.json(
         { ok: false, error: "Message is required" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -31,11 +46,10 @@ export async function POST(request: Request) {
     if (!trimmed) {
       return Response.json(
         { ok: false, error: "Message is required" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    // 快路径：只做生成主回复所需的最小读取；把“显式反馈检测/写库”和“suggestedAction 提取/写库”都改成后台异步。
     const userId = await getCurrentUserId();
     if (!userId) {
       return Response.json(
@@ -43,61 +57,68 @@ export async function POST(request: Request) {
         { status: 401 },
       );
     }
+    logChatTiming("auth done");
 
-    const [supportContext, currentState, latestAssistantMessage, recentFeedbackWithNotes] =
-      await Promise.all([
-        (prisma as typeof prisma & {
-          userSupportContext: {
-            findUnique: (args: { where: { userId: string } }) => Promise<{
-              scamSituation: string;
-              scamImpact: string;
-              personality: string;
-              likedActivities: string;
-              expectedRole: string;
-              toneStyle: string;
-              proactiveLevel: string;
-              helpGoals: string;
-            } | null>;
-          };
-        }).userSupportContext.findUnique({
-          where: { userId },
-        }),
-        prisma.currentState.findFirst({
-          where: { userId },
-          orderBy: { createdAt: "desc" },
-        }),
-        prisma.message.findFirst({
-          where: { userId, role: "assistant" },
-          orderBy: { createdAt: "desc" },
-        }),
-        (prisma.feedbackRecord.findMany({
-          where: {
-            userId,
-            llmNote: {
-              not: null,
-            },
-          },
-          orderBy: { createdAt: "desc" },
-          take: 200,
-        })) as Promise<FeedbackNoteRecord[]>,
-      ]);
+    const [
+      supportContext,
+      currentState,
+      latestAssistantMessage,
+      recentPanelFeedbackNotes,
+      recentExplicitFeedbackNotes,
+    ] = await Promise.all([
+      (prisma as typeof prisma & {
+        userSupportContext: {
+          findUnique: (args: { where: { userId: string } }) => Promise<{
+            scamSituation: string;
+            scamImpact: string;
+            personality: string;
+            likedActivities: string;
+            expectedRole: string;
+            toneStyle: string;
+            proactiveLevel: string;
+            helpGoals: string;
+          } | null>;
+        };
+      }).userSupportContext.findUnique({
+        where: { userId },
+      }),
+      prisma.currentState.findFirst({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.message.findFirst({
+        where: { userId, role: "assistant" },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.feedbackRecord.findMany({
+        where: {
+          userId,
+          feedbackSource: "panel",
+          llmNote: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      }),
+      prisma.feedbackRecord.findMany({
+        where: {
+          userId,
+          feedbackSource: "explicit_text",
+          llmNote: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      }),
+    ]);
 
-    const panelFeedbackNotes = recentFeedbackWithNotes
-      .filter(
-        (item) =>
-          item.feedbackSource === "panel" && (item.llmNote ?? "").trim() !== ""
-      )
-      .slice(0, 10)
-      .map((item) => (item.llmNote ?? "").trim());
+    logChatTiming("initial context queries done");
 
-    const explicitFeedbackNotes = recentFeedbackWithNotes
-      .filter(
-        (item) =>
-          item.feedbackSource === "explicit_text" &&
-          (item.llmNote ?? "").trim() !== ""
-      )
-      .slice(0, 10)
-      .map((item) => (item.llmNote ?? "").trim());
+    const panelFeedbackNotes = recentPanelFeedbackNotes
+      .map((item) => item.llmNote?.trim() ?? "")
+      .filter(Boolean);
+
+    const explicitFeedbackNotes = recentExplicitFeedbackNotes
+      .map((item) => item.llmNote?.trim() ?? "")
+      .filter(Boolean);
 
     const savedUserMessage = await prisma.message.create({
       data: {
@@ -106,19 +127,22 @@ export async function POST(request: Request) {
         content: trimmed,
       },
     });
+    logChatTiming("user message saved");
 
     const recentChatHistoryDesc = (await prisma.message.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
       take: 20,
     })) as Array<{ id: string; role: string; content: string }>;
+    logChatTiming("chat history loaded");
+
     const recentChatHistory = recentChatHistoryDesc.reverse();
 
     const priorConversation = recentChatHistory
       .filter(
         (msg) =>
           msg.id !== savedUserMessage.id &&
-          (msg.role === "user" || msg.role === "assistant")
+          (msg.role === "user" || msg.role === "assistant"),
       )
       .map((msg) => ({
         role: msg.role as "user" | "assistant",
@@ -131,20 +155,8 @@ export async function POST(request: Request) {
       trimmed,
       panelFeedbackNotes,
       explicitFeedbackNotes,
-      priorConversation
+      priorConversation,
     );
-
-    const { reply } = await callDoubao({
-      ...generationContext,
-    });
-
-    const savedAssistantMessage = await prisma.message.create({
-      data: {
-        userId,
-        role: "assistant",
-        content: reply,
-      },
-    });
 
     const currentStateSnapshot: string | null = currentState
       ? JSON.stringify({
@@ -155,88 +167,141 @@ export async function POST(request: Request) {
         })
       : null;
 
-    // 后台任务 1：从 assistant reply 里提取 suggestedAction，并把它写回 Message 表（用于前端增量显示“加入日常恢复”按钮）。
-    void (async () => {
-      try {
-        const extracted = await extractActionableRecoveryStep({
-          replyText: reply,
-        });
-        const suggestedAction =
-          extracted.hasActionableRecoveryStep &&
-          typeof extracted.suggestedAction === "string"
-            ? extracted.suggestedAction.trim()
-            : null;
+    const stream = new ReadableStream({
+      async start(controller) {
+        const enqueueSse = (event: string, data: unknown) => {
+          controller.enqueue(encodeSse(event, data));
+        };
 
-        const suggestedActionSafe =
-          suggestedAction && reply.includes(suggestedAction)
-            ? suggestedAction
-            : null;
+        let reply = "";
+        let savedAssistantMessage: { id: string };
 
-        if (!suggestedActionSafe) return;
+        try {
+          const completionStream = await createDoubaoStream(generationContext);
+          logChatTiming("LLM stream created");
 
-        await prisma.message.update({
-          where: { id: savedAssistantMessage.id },
-          data: { suggestedAction: suggestedActionSafe },
-        });
+          let accumulatedRaw = "";
 
-        await prisma.dailyRecoveryEventLog.create({
-          data: {
-            userId,
-            eventType: "assistant_message_suggested_action",
-            detail: {
-              messageId: savedAssistantMessage.id,
-              suggestedAction: suggestedActionSafe,
+          for await (const chunk of completionStream) {
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (typeof delta === "string" && delta.length > 0) {
+              accumulatedRaw += delta;
+              enqueueSse("delta", { text: delta });
+            }
+          }
+          logChatTiming("LLM stream finished");
+
+          const outcome = normalizeDoubaoStreamedReply(accumulatedRaw);
+          reply = outcome.reply;
+
+          savedAssistantMessage = await prisma.message.create({
+            data: {
+              userId,
+              role: "assistant",
+              content: reply,
             },
-          },
-        });
-      } catch (e) {
-        console.error("suggestedAction background task failed:", e);
-      }
-    })();
+          });
+          logChatTiming("assistant message saved");
 
-    // 后台任务 2：对“上一条助手回复”做 explicit feedback 检测，并写入 feedbackRecord。
-    void (async () => {
-      try {
-        if (!latestAssistantMessage) return;
+          void (async () => {
+            try {
+              const extracted = await extractActionableRecoveryStep({
+                replyText: reply,
+              });
+              const suggestedAction =
+                extracted.hasActionableRecoveryStep &&
+                typeof extracted.suggestedAction === "string"
+                  ? extracted.suggestedAction.trim()
+                  : null;
 
-        const explicitDetection = await detectExplicitFeedback({
-          userMessage: trimmed,
-          latestAssistantReplyText: latestAssistantMessage.content,
-        });
+              const suggestedActionSafe =
+                suggestedAction && reply.includes(suggestedAction)
+                  ? suggestedAction
+                  : null;
 
-        if (!explicitDetection.isExplicitFeedback) return;
+              if (!suggestedActionSafe) return;
 
-        const explicitLlmNote = await summarizeFeedbackNote({
-          feedbackSource: "explicit_text",
-          selectedReason: "explicit_textual_feedback",
-          otherText: trimmed,
-          userMessage: trimmed,
-          assistantReplyText: latestAssistantMessage.content,
-          currentStateSnapshot,
-        });
+              await prisma.message.update({
+                where: { id: savedAssistantMessage.id },
+                data: { suggestedAction: suggestedActionSafe },
+              });
 
-        await prisma.feedbackRecord.create({
-          data: {
-            userId,
-            feedbackSource: "explicit_text",
-            selectedReason: "explicit_textual_feedback",
-            otherText: trimmed,
-            assistantReplyText: latestAssistantMessage.content,
-            messageId: latestAssistantMessage.id,
-            currentStateSnapshot,
-            llmNote: explicitLlmNote,
-          },
-        });
-      } catch (e) {
-        console.error("explicit feedback background task failed:", e);
-      }
-    })();
+              await prisma.dailyRecoveryEventLog.create({
+                data: {
+                  userId,
+                  eventType: "assistant_message_suggested_action",
+                  detail: {
+                    messageId: savedAssistantMessage.id,
+                    suggestedAction: suggestedActionSafe,
+                  },
+                },
+              });
+            } catch (e) {
+              console.error("suggestedAction background task failed:", e);
+            }
+          })();
 
-    return Response.json({
-      ok: true,
-      reply,
-      suggestedAction: null,
-      messageId: savedAssistantMessage.id,
+          void (async () => {
+            try {
+              if (!latestAssistantMessage) return;
+
+              const explicitDetection = await detectExplicitFeedback({
+                userMessage: trimmed,
+                latestAssistantReplyText: latestAssistantMessage.content,
+              });
+
+              if (!explicitDetection.isExplicitFeedback) return;
+
+              const explicitLlmNote = await summarizeFeedbackNote({
+                feedbackSource: "explicit_text",
+                selectedReason: "explicit_textual_feedback",
+                otherText: trimmed,
+                userMessage: trimmed,
+                assistantReplyText: latestAssistantMessage.content,
+                currentStateSnapshot,
+              });
+
+              await prisma.feedbackRecord.create({
+                data: {
+                  userId,
+                  feedbackSource: "explicit_text",
+                  selectedReason: "explicit_textual_feedback",
+                  otherText: trimmed,
+                  assistantReplyText: latestAssistantMessage.content,
+                  messageId: latestAssistantMessage.id,
+                  currentStateSnapshot,
+                  llmNote: explicitLlmNote,
+                },
+              });
+            } catch (e) {
+              console.error("explicit feedback background task failed:", e);
+            }
+          })();
+
+          enqueueSse("done", {
+            messageId: savedAssistantMessage.id,
+            suggestedAction: null,
+            reply,
+          });
+          controller.close();
+        } catch (e) {
+          console.error("chat SSE stream processing failed:", e);
+          try {
+            enqueueSse("error", { message: "发送失败，请重试" });
+          } catch {
+            // ignore enqueue after close
+          }
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
     });
   } catch (error) {
     console.error("Failed to process chat:", error);
@@ -246,7 +311,7 @@ export async function POST(request: Request) {
         error: "Failed to process chat",
         details: error instanceof Error ? error.message : "Unknown error",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

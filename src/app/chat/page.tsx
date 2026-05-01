@@ -337,6 +337,9 @@ export default function ChatPage() {
   const [progressLetters, setProgressLetters] = useState<ProgressLetter[]>([]);
   const [selectedLetter, setSelectedLetter] = useState<ProgressLetter | null>(null);
   const chatScrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuPanelRef = useRef<HTMLDivElement | null>(null);
+  const moreMenuButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const latestAssistant = lastAssistantMessage(messages);
 
@@ -447,88 +450,196 @@ export default function ChatPage() {
         body: JSON.stringify({ message: trimmed }),
       });
 
-      let data: {
-        ok?: boolean;
-        reply?: string;
-        messageId?: string;
-        suggestedAction?: string | null;
-      };
-      try {
-        data = (await res.json()) as typeof data;
-      } catch {
+      const contentType = res.headers.get("content-type") ?? "";
+
+      if (!res.ok) {
+        let errText = "发送失败，请重试";
+        try {
+          const errBody = (await res.json()) as { error?: unknown };
+          if (typeof errBody.error === "string" && errBody.error.trim() !== "") {
+            errText = errBody.error.trim();
+          }
+        } catch {
+          // ignore
+        }
+        setErrorMessage(errText);
+        return;
+      }
+
+      if (!contentType.includes("text/event-stream") || !res.body) {
         setErrorMessage("发送失败，请重试");
         return;
       }
 
-      if (
-        !res.ok ||
-        !data.ok ||
-        typeof data.reply !== "string" ||
-        typeof data.messageId !== "string"
-      ) {
-        setErrorMessage("发送失败，请重试");
-        return;
-      }
-
-      const reply = data.reply;
-      const assistantId = data.messageId;
-      const sug =
-        typeof data.suggestedAction === "string" &&
-        data.suggestedAction.trim() !== ""
-          ? data.suggestedAction.trim()
-          : null;
-
+      const localAssistantId = `local-assistant-${generateLocalChatMessageId()}`;
       setMessages((prev) => [
         ...prev,
-        sug
-          ? { id: assistantId, role: "assistant", text: reply, suggestedAction: sug }
-          : { id: assistantId, role: "assistant", text: reply },
+        { id: localAssistantId, role: "assistant", text: "" },
       ]);
 
-      // 主回复返回后，suggestedAction 可能在后台补齐：做一个轻量重试读取，避免把按钮显示也卡在首包响应上。
-      void (async () => {
-        const maxAttempts = 6;
-        const delays = [600, 900, 1300, 1800, 2500]; // 总计最多约 6 秒
+      const pollSuggestedAction = (assistantId: string) => {
+        void (async () => {
+          const maxAttempts = 6;
+          const delays = [600, 900, 1300, 1800, 2500]; // 总计最多约 6 秒
 
-        const tryOnce = async (attemptIndex: number) => {
-          if (attemptIndex >= maxAttempts) return;
-          try {
-            const r = await fetch(
-              `/api/chat/message?messageId=${encodeURIComponent(assistantId)}`,
-            );
-            if (!r.ok) throw new Error("not ok");
-            const payload = (await r.json().catch(() => ({}))) as {
-              ok?: boolean;
-              suggestedAction?: string | null;
-            };
+          const tryOnce = async (attemptIndex: number) => {
+            if (attemptIndex >= maxAttempts) return;
+            try {
+              const r = await fetch(
+                `/api/chat/message?messageId=${encodeURIComponent(assistantId)}`,
+              );
+              if (!r.ok) throw new Error("not ok");
+              const payload = (await r.json().catch(() => ({}))) as {
+                ok?: boolean;
+                suggestedAction?: string | null;
+              };
 
-            const nextSug =
-              typeof payload.suggestedAction === "string"
-                ? payload.suggestedAction.trim()
-                : "";
+              const nextSug =
+                typeof payload.suggestedAction === "string"
+                  ? payload.suggestedAction.trim()
+                  : "";
 
-            if (nextSug) {
+              if (nextSug) {
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    if (m.role !== "assistant") return m;
+                    return { ...m, suggestedAction: nextSug };
+                  }),
+                );
+                return;
+              }
+            } catch {
+              // 忽略单次失败，继续重试。
+            }
+
+            const delay = delays[attemptIndex] ?? delays[delays.length - 1];
+            window.setTimeout(() => {
+              void tryOnce(attemptIndex + 1);
+            }, delay);
+          };
+
+          void tryOnce(0);
+        })();
+      };
+
+      let streamCompletedOk = false;
+
+      try {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          const events = buffer.split("\n\n");
+          buffer = events.pop() ?? "";
+
+          for (const rawEvent of events) {
+            const lines = rawEvent.split("\n");
+
+            const eventLine = lines.find((line) => line.startsWith("event: "));
+            const dataLine = lines.find((line) => line.startsWith("data: "));
+
+            if (!eventLine || !dataLine) continue;
+
+            const event = eventLine.replace("event: ", "").trim();
+
+            let data: unknown;
+            try {
+              data = JSON.parse(dataLine.replace("data: ", ""));
+            } catch {
+              continue;
+            }
+
+            if (event === "delta") {
+              const delta =
+                typeof data === "object" &&
+                data !== null &&
+                "text" in data &&
+                typeof (data as { text: unknown }).text === "string"
+                  ? (data as { text: string }).text
+                  : "";
+
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === localAssistantId ? { ...m, text: m.text + delta } : m,
+                ),
+              );
+            }
+
+            if (event === "done") {
+              streamCompletedOk = true;
+              const d = data as {
+                messageId?: unknown;
+                suggestedAction?: unknown;
+                reply?: unknown;
+              };
+              const resolvedId =
+                typeof d.messageId === "string" ? d.messageId : null;
+
+              const finalReply =
+                typeof d.reply === "string" ? d.reply.trim() : null;
+
+              const sug =
+                typeof d.suggestedAction === "string" &&
+                d.suggestedAction.trim() !== ""
+                  ? d.suggestedAction.trim()
+                  : null;
+
               setMessages((prev) =>
                 prev.map((m) => {
-                  if (m.id !== assistantId) return m;
-                  if (m.role !== "assistant") return m;
-                  return { ...m, suggestedAction: nextSug };
+                  if (m.id !== localAssistantId) return m;
+
+                  const nextId = resolvedId ?? m.id;
+                  const nextText =
+                    finalReply !== null && finalReply !== "" ? finalReply : m.text;
+
+                  if (sug) {
+                    return {
+                      id: nextId,
+                      role: "assistant" as const,
+                      text: nextText,
+                      suggestedAction: sug,
+                    };
+                  }
+                  return {
+                    id: nextId,
+                    role: "assistant" as const,
+                    text: nextText,
+                  };
                 }),
               );
-              return;
+
+              const pollId = resolvedId ?? localAssistantId;
+              pollSuggestedAction(pollId);
             }
-          } catch {
-            // 忽略单次失败，继续重试。
+
+            if (event === "error") {
+              setErrorMessage("发送失败，请重试");
+              setMessages((prev) =>
+                prev.filter((m) => m.id !== localAssistantId),
+              );
+            }
           }
+        }
 
-          const delay = delays[attemptIndex] ?? delays[delays.length - 1];
-          window.setTimeout(() => {
-            void tryOnce(attemptIndex + 1);
-          }, delay);
-        };
-
-        void tryOnce(0);
-      })();
+        if (!streamCompletedOk) {
+          setErrorMessage("发送失败，请重试");
+          setMessages((prev) =>
+            prev.filter((m) => m.id !== localAssistantId),
+          );
+        }
+      } catch {
+        setErrorMessage("发送失败，请重试");
+        setMessages((prev) =>
+          prev.filter((m) => m.id !== localAssistantId),
+        );
+      }
     } catch {
       setErrorMessage("发送失败，请重试");
     } finally {
@@ -800,7 +911,16 @@ export default function ChatPage() {
           return;
         }
 
-        const cs = (data as { ok?: boolean; currentState?: null | any }).currentState ?? null;
+        const typedData = data as {
+          ok?: boolean;
+          currentState?: null | {
+            emotional: string | null;
+            physical: string | null;
+            spatial: string | null;
+            createdAt: string;
+          };
+        };
+        const cs = typedData.currentState ?? null;
         if (cs) {
           setSavedCurrentState({
             emotional: cs.emotional ?? "",
@@ -835,6 +955,20 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
+    if (!moreMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const panel = moreMenuPanelRef.current;
+      const btn = moreMenuButtonRef.current;
+      const node = e.target;
+      if (node instanceof Node && panel?.contains(node)) return;
+      if (node instanceof Node && btn?.contains(node)) return;
+      setMoreMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [moreMenuOpen]);
+
+  useEffect(() => {
     if (!currentStateLoaded) return;
     if (panelOpen) return;
     if (messages.length !== 0) return;
@@ -850,62 +984,79 @@ export default function ChatPage() {
       className="flex h-dvh min-h-dvh flex-col bg-[#f7f4ef] text-stone-800 lg:flex-row"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="border-b border-stone-200/60 bg-[#fbf9f5]/90 px-2 py-2 sm:px-3 sm:py-2.5">
-        <div className="mx-auto max-w-lg space-y-1.5">
-          <div className="-mx-0.5 flex items-center gap-1 overflow-x-auto px-0.5 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-1.5 sm:overflow-visible">
+      <div className="border-b border-stone-200/60 bg-[#fbf9f5]/90 px-2 py-1.5 sm:px-3 sm:py-2 lg:px-4 lg:py-2.5">
+        <div className="mx-auto max-w-lg">
+          <div className="grid grid-cols-4 gap-1.5 lg:flex lg:flex-nowrap lg:justify-start lg:gap-2 lg:overflow-x-auto lg:pb-px [scrollbar-width:none] lg:[&::-webkit-scrollbar]:hidden">
             <button
               type="button"
               onClick={openDailyRecoveryMobileOrFocusSidebar}
-              className="shrink-0 rounded-full border border-stone-200/85 bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-600 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors active:bg-stone-100/85 sm:text-xs"
+              className="flex min-h-[44px] min-w-0 max-lg:min-h-[40px] items-center justify-center whitespace-nowrap rounded-xl border border-stone-200/85 bg-white/80 px-1.5 max-lg:px-1 text-[13px] font-medium leading-tight text-stone-700 shadow-[0_1px_0_rgba(255,255,255,0.65)] max-lg:text-[11px] max-lg:leading-snug max-lg:shadow-none transition-colors active:bg-stone-100/90 lg:min-h-0 lg:shrink-0 lg:rounded-full lg:px-2.5 lg:py-1 lg:text-xs lg:text-stone-600"
             >
               日常恢复
             </button>
             <button
               type="button"
               onClick={() => setDiaryOpen(true)}
-              className="shrink-0 rounded-full border border-stone-200/85 bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-600 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors active:bg-stone-100/85 sm:text-xs"
+              className="flex min-h-[44px] min-w-0 max-lg:min-h-[40px] items-center justify-center whitespace-nowrap rounded-xl border border-stone-200/85 bg-white/80 px-1.5 max-lg:px-1 text-[13px] font-medium leading-tight text-stone-700 shadow-[0_1px_0_rgba(255,255,255,0.65)] max-lg:text-[11px] max-lg:leading-snug max-lg:shadow-none transition-colors active:bg-stone-100/90 lg:min-h-0 lg:shrink-0 lg:rounded-full lg:px-2.5 lg:py-1 lg:text-xs lg:text-stone-600"
             >
               写日记
             </button>
             <button
               type="button"
               onClick={() => setPanelOpen(true)}
-              className="shrink-0 rounded-full border border-stone-200/85 bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-600 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors active:bg-stone-100/85 sm:text-xs"
+              className="flex min-h-[44px] min-w-0 max-lg:min-h-[40px] items-center justify-center whitespace-nowrap rounded-xl border border-stone-200/85 bg-white/80 px-1.5 max-lg:px-1 text-[13px] font-medium leading-tight text-stone-700 shadow-[0_1px_0_rgba(255,255,255,0.65)] max-lg:text-[11px] max-lg:leading-snug max-lg:shadow-none transition-colors active:bg-stone-100/90 lg:min-h-0 lg:shrink-0 lg:rounded-full lg:px-2.5 lg:py-1 lg:text-xs lg:text-stone-600"
             >
               当前状态
             </button>
-            <details className="group relative shrink-0">
-              <summary
+            <div className="relative z-[140] flex max-lg:min-h-[40px] min-h-[44px] min-w-0 justify-center lg:flex lg:w-auto lg:min-h-0 lg:shrink-0 lg:justify-start">
+              <button
+                ref={moreMenuButtonRef}
+                type="button"
                 aria-label="更多"
-                className="flex list-none cursor-pointer items-center rounded-full border border-stone-200/85 bg-white/75 px-2 py-1 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors marker:content-none active:bg-stone-100/85 [&::-webkit-details-marker]:hidden"
+                aria-expanded={moreMenuOpen}
+                aria-haspopup="menu"
+                className="flex h-[44px] min-h-[44px] max-lg:h-10 max-lg:min-h-10 w-full max-w-none min-w-[44px] cursor-pointer items-center justify-center rounded-xl border border-stone-200/85 bg-white/80 px-1.5 text-[17px] font-semibold leading-none text-stone-500 shadow-[0_1px_0_rgba(255,255,255,0.65)] max-lg:shadow-none transition-colors active:bg-stone-100/90 lg:h-auto lg:w-auto lg:min-h-0 lg:min-w-0 lg:rounded-full lg:px-2 lg:py-1 lg:text-[14px]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMoreMenuOpen((o) => !o);
+                }}
               >
-                <span className="px-1 text-[14px] font-semibold leading-none text-stone-500">⋯</span>
-              </summary>
-              <div className="absolute right-0 top-[calc(100%+0.25rem)] z-50 min-w-[10.5rem] overflow-hidden rounded-xl border border-stone-200/80 bg-[#fbf9f5]/98 py-1 text-left text-xs shadow-lg backdrop-blur-md">
-                <button
-                  type="button"
-                  className="block w-full px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-200/35"
-                  onClick={(e) => {
-                    const d = e.currentTarget.closest("details");
-                    router.push("/onboarding");
-                    if (d) (d as HTMLDetailsElement).open = false;
-                  }}
+                ⋯
+              </button>
+              {moreMenuOpen ? (
+                <div
+                  ref={moreMenuPanelRef}
+                  role="menu"
+                  aria-label="更多操作"
+                  className="absolute right-0 top-[calc(100%+6px)] z-[200] min-w-[11rem] rounded-xl border border-stone-200/80 bg-[#fbf9f5]/98 py-1 text-left text-[15px] shadow-xl backdrop-blur-md"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  修改支持设定
-                </button>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-200/35"
-                  onClick={(e) => {
-                    const d = e.currentTarget.closest("details");
-                    void handleLogout();
-                    if (d) (d as HTMLDetailsElement).open = false;
-                  }}
-                >
-                  退出
-                </button>
-              </div>
-            </details>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="block w-full px-4 py-3 text-left font-medium text-stone-700 transition-colors hover:bg-stone-200/40 active:bg-stone-200/55"
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      router.push("/onboarding");
+                    }}
+                  >
+                    修改支持设定
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="block w-full px-4 py-3 text-left font-medium text-stone-700 transition-colors hover:bg-stone-200/40 active:bg-stone-200/55"
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      void handleLogout();
+                    }}
+                  >
+                    退出
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
@@ -957,45 +1108,53 @@ export default function ChatPage() {
       </div>
 
       <form
-        className="shrink-0 border-t border-stone-200/60 bg-[#fbf9f5]/95 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-sm"
+        className="shrink-0 border-0 bg-[#f7f4ef] shadow-none ring-0 px-2 pb-[max(10px,calc(env(safe-area-inset-bottom)+10px))] pt-3 sm:px-3 lg:border-t lg:border-stone-200/60 lg:bg-[#fbf9f5]/92 lg:px-4 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] lg:pt-3 lg:backdrop-blur-sm"
         onSubmit={(e) => {
           e.preventDefault();
           void handleSend();
         }}
       >
-        <div className="mx-auto flex max-w-lg flex-col gap-2">
-          <div className="flex items-end gap-2">
-            <div className="shrink-0 lg:hidden">
-              <ProgressPlantAndLetters
-                density="inline"
-                stage={progressStage}
-                hasUnread={progressHasUnread}
-                onOpenLetters={() => setProgressPanelOpen(true)}
-                onOpenLatestUnread={openLatestUnreadLetter}
-              />
-            </div>
-            <div className="flex min-w-0 flex-1 items-end gap-1.5 rounded-2xl border border-stone-200/50 bg-[#f3f0ea]/75 px-1 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] sm:gap-2 sm:px-1.5 sm:py-2">
-              <div className="flex min-w-0 flex-1 flex-col">
-                <label htmlFor="chat-input" className="sr-only">
-                  输入消息
-                </label>
-                <input
-                  id="chat-input"
-                  type="text"
-                  name="message"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="想说什么都可以……"
-                  className="min-h-[48px] w-full rounded-2xl border border-stone-200/80 bg-white px-4 py-3 text-base text-stone-800 placeholder:text-stone-400 outline-none ring-0 transition-shadow focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.12)] sm:text-[15px]"
-                  autoComplete="off"
+        <div className="mx-auto flex w-full max-w-lg flex-col gap-2">
+          <div className="flex items-end gap-1 lg:gap-3">
+            <div className="relative -ml-5 h-[92px] w-[96px] shrink-0 overflow-visible lg:hidden">
+              <div className="absolute bottom-0 left-0">
+                <ProgressPlantAndLetters
+                  density="composer"
+                  stage={progressStage}
+                  hasUnread={progressHasUnread}
+                  onOpenLetters={() => setProgressPanelOpen(true)}
+                  onOpenLatestUnread={openLatestUnreadLetter}
                 />
               </div>
+            </div>
+            <div className="flex min-h-0 min-w-0 flex-1 items-end gap-1 lg:gap-3">
+              <label htmlFor="chat-input" className="sr-only">
+                输入消息
+              </label>
+              <input
+                id="chat-input"
+                type="text"
+                name="message"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="想说什么都可以……"
+                className="max-lg:shadow-sm min-h-[48px] min-w-0 flex-1 rounded-2xl border border-stone-200/85 bg-white/95 px-4 py-3 text-[16px] text-stone-800 placeholder:text-stone-400 outline-none ring-0 transition-shadow focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.12)] sm:text-[15px] lg:border-stone-200/80 lg:bg-white"
+                autoComplete="off"
+              />
               <button
                 type="submit"
                 disabled={loading}
-                className="min-h-[48px] shrink-0 rounded-2xl bg-stone-600 px-5 py-3 text-sm font-medium text-stone-50 transition-colors hover:bg-stone-700 active:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-0 sm:px-4"
+                className="min-h-[48px] min-w-[3.75rem] shrink-0 rounded-2xl bg-stone-600 px-3.5 py-3 text-[15px] font-semibold text-stone-50 transition-colors hover:bg-stone-700 active:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60 max-lg:active:scale-[0.98] sm:min-w-[4rem] sm:px-4 lg:min-h-0 lg:text-sm lg:font-medium"
+                aria-busy={loading || undefined}
               >
-                {loading ? "发送中…" : "发送"}
+                {loading ? (
+                  <>
+                    <span className="lg:hidden">发送</span>
+                    <span className="hidden lg:inline">发送中…</span>
+                  </>
+                ) : (
+                  "发送"
+                )}
               </button>
             </div>
           </div>
