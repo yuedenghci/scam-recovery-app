@@ -63,7 +63,7 @@ export default function RootLayout({
       lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-dvh flex flex-col bg-[#f7f4ef] [--mobile-nav-height:3.75rem]">
+      <body className="min-h-dvh flex flex-col bg-[#f7f4ef]">
         {children}
         <PwaRegister />
       </body>

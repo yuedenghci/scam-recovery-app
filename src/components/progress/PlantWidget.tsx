@@ -26,11 +26,14 @@ export function ProgressPlantAndLetters({
   hasUnread,
   onOpenLetters,
   onOpenLatestUnread,
+  density = "floating",
 }: {
   stage: number;
   hasUnread: boolean;
   onOpenLetters: () => void;
   onOpenLatestUnread: () => void;
+  /** inline：输入法旁紧凑展示；floating：沿用原有尺寸（桌面角标等）。 */
+  density?: "floating" | "inline";
 }) {
   const stageIndex = Math.min(4, Math.max(0, Math.round(stage)));
   const primaryPlantSrc = STAGE_IMAGE_MAP[stageIndex];
@@ -43,8 +46,12 @@ export function ProgressPlantAndLetters({
     setPlantSrc(primaryPlantSrc);
   }, [primaryPlantSrc]);
 
-  return (
-    <div className="relative h-[11.75rem] w-[8.5rem] sm:h-[13rem] sm:w-[9.25rem]">
+  const floatingShell = "relative h-[11.75rem] w-[8.5rem] sm:h-[13rem] sm:w-[9.25rem]";
+  const inlineShell =
+    "relative flex h-[3.25rem] min-h-[44px] w-[2.9375rem] min-w-[44px] shrink-0 items-end justify-center overflow-visible pb-px";
+
+  const core = (
+    <>
       <button
         type="button"
         onClick={onOpenLetters}
@@ -131,6 +138,18 @@ export function ProgressPlantAndLetters({
           }
         }
       `}</style>
-    </div>
+    </>
   );
+
+  if (density === "inline") {
+    return (
+      <div className={inlineShell}>
+        <div className="pointer-events-auto relative h-[11.75rem] w-[8.5rem] origin-bottom scale-[0.34] translate-y-[2px]">
+          {core}
+        </div>
+      </div>
+    );
+  }
+
+  return <div className={floatingShell}>{core}</div>;
 }

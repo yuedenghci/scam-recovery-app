@@ -10,7 +10,6 @@ import {
 import { useRouter } from "next/navigation";
 
 import { DailyRecoveryPanel } from "@/app/chat/DailyRecoveryPanel";
-import { DiaryEntryButton } from "@/components/diary/DiaryEntryButton";
 import { DiaryModal } from "@/components/diary/DiaryModal";
 import { ProgressPlantAndLetters } from "@/components/progress/PlantWidget";
 import {
@@ -332,7 +331,6 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [diaryOpen, setDiaryOpen] = useState(false);
-  const [diaryHasTodayEntry, setDiaryHasTodayEntry] = useState<boolean | null>(null);
   const [progressPanelOpen, setProgressPanelOpen] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
   const [progressHasUnread, setProgressHasUnread] = useState(false);
@@ -340,13 +338,28 @@ export default function ChatPage() {
   const [selectedLetter, setSelectedLetter] = useState<ProgressLetter | null>(null);
   const chatScrollAreaRef = useRef<HTMLDivElement | null>(null);
 
-  const scrollChatToLatest = useCallback(() => {
-    const el = chatScrollAreaRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  const latestAssistant = lastAssistantMessage(messages);
+
+  const openDailyRecoveryMobileOrFocusSidebar = useCallback(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches) {
+      document.getElementById("chat-daily-recovery-sidebar")?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+      return;
+    }
+    setDailyRecoveryOpen(true);
   }, []);
 
-  const latestAssistant = lastAssistantMessage(messages);
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      /* cookie may still clear on success; fallback still redirect */
+    }
+    router.push("/login");
+    router.refresh();
+  }, [router]);
 
   const loadProgress = useCallback(async () => {
     try {
@@ -771,17 +784,6 @@ export default function ChatPage() {
     }
   }, [draftCurrentState, loadProgress, showToast]);
 
-  const reloadDiaryStatus = useCallback(async () => {
-    try {
-      const res = await fetch("/api/diary");
-      const data = (await res.json()) as { ok?: boolean; todayEntry?: unknown };
-      if (!res.ok || !data.ok) return;
-      setDiaryHasTodayEntry(Boolean(data.todayEntry));
-    } catch {
-      // ignore
-    }
-  }, []);
-
   useEffect(() => {
     // 进入 support AI 页面后：如果当天还没填过当前状态，就必须先弹窗填写。
     void (async () => {
@@ -830,8 +832,7 @@ export default function ChatPage() {
       }
     })();
 
-    void reloadDiaryStatus();
-  }, [reloadDiaryStatus]);
+  }, []);
 
   useEffect(() => {
     if (!currentStateLoaded) return;
@@ -849,18 +850,63 @@ export default function ChatPage() {
       className="flex h-dvh min-h-dvh flex-col bg-[#f7f4ef] text-stone-800 lg:flex-row"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="border-b border-stone-200/60 bg-[#fbf9f5]/90 px-3 py-3 sm:px-4 sm:py-3">
-        <div className="mx-auto flex max-w-lg flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-          <h1 className="text-[15px] font-medium leading-snug text-stone-800 sm:text-sm">
-            支持对话
-          </h1>
-          <button
-            type="button"
-            onClick={() => router.push("/onboarding")}
-            className="min-h-[44px] shrink-0 rounded-xl border border-stone-300/80 bg-white/90 px-3 py-2.5 text-xs text-stone-600 shadow-sm transition-colors hover:border-stone-400 hover:text-stone-800 sm:w-auto sm:min-h-0 sm:py-1.5"
-          >
-            查看 / 修改我的设置
-          </button>
+      <div className="border-b border-stone-200/60 bg-[#fbf9f5]/90 px-2 py-2 sm:px-3 sm:py-2.5">
+        <div className="mx-auto max-w-lg space-y-1.5">
+          <div className="-mx-0.5 flex items-center gap-1 overflow-x-auto px-0.5 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-1.5 sm:overflow-visible">
+            <button
+              type="button"
+              onClick={openDailyRecoveryMobileOrFocusSidebar}
+              className="shrink-0 rounded-full border border-stone-200/85 bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-600 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors active:bg-stone-100/85 sm:text-xs"
+            >
+              日常恢复
+            </button>
+            <button
+              type="button"
+              onClick={() => setDiaryOpen(true)}
+              className="shrink-0 rounded-full border border-stone-200/85 bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-600 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors active:bg-stone-100/85 sm:text-xs"
+            >
+              写日记
+            </button>
+            <button
+              type="button"
+              onClick={() => setPanelOpen(true)}
+              className="shrink-0 rounded-full border border-stone-200/85 bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-600 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors active:bg-stone-100/85 sm:text-xs"
+            >
+              当前状态
+            </button>
+            <details className="group relative shrink-0">
+              <summary
+                aria-label="更多"
+                className="flex list-none cursor-pointer items-center rounded-full border border-stone-200/85 bg-white/75 px-2 py-1 shadow-[0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-sm transition-colors marker:content-none active:bg-stone-100/85 [&::-webkit-details-marker]:hidden"
+              >
+                <span className="px-1 text-[14px] font-semibold leading-none text-stone-500">⋯</span>
+              </summary>
+              <div className="absolute right-0 top-[calc(100%+0.25rem)] z-50 min-w-[10.5rem] overflow-hidden rounded-xl border border-stone-200/80 bg-[#fbf9f5]/98 py-1 text-left text-xs shadow-lg backdrop-blur-md">
+                <button
+                  type="button"
+                  className="block w-full px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-200/35"
+                  onClick={(e) => {
+                    const d = e.currentTarget.closest("details");
+                    router.push("/onboarding");
+                    if (d) (d as HTMLDetailsElement).open = false;
+                  }}
+                >
+                  修改支持设定
+                </button>
+                <button
+                  type="button"
+                  className="block w-full px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-200/35"
+                  onClick={(e) => {
+                    const d = e.currentTarget.closest("details");
+                    void handleLogout();
+                    if (d) (d as HTMLDetailsElement).open = false;
+                  }}
+                >
+                  退出
+                </button>
+              </div>
+            </details>
+          </div>
         </div>
       </div>
       <div
@@ -911,55 +957,47 @@ export default function ChatPage() {
       </div>
 
       <form
-        className="shrink-0 border-t border-stone-200/60 bg-[#fbf9f5]/95 px-3 py-3 pb-[max(0.75rem,calc(env(safe-area-inset-bottom)+var(--mobile-nav-height)))] backdrop-blur-sm lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+        className="shrink-0 border-t border-stone-200/60 bg-[#fbf9f5]/95 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-sm"
         onSubmit={(e) => {
           e.preventDefault();
           void handleSend();
         }}
       >
-        <div className="mx-auto flex max-w-lg flex-col gap-2.5">
-          <div className="flex flex-wrap items-start gap-2 sm:items-center">
-            <button
-              type="button"
-              onClick={() => setPanelOpen(true)}
-              className="min-h-[44px] rounded-xl border border-stone-300/80 bg-white/90 px-3 py-2.5 text-xs font-medium tracking-wide text-stone-600 shadow-sm transition-[color,background-color,border-color,box-shadow] hover:border-stone-400 hover:bg-white hover:text-stone-800 hover:shadow-sm active:scale-[0.99] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-400/70 sm:min-h-0 sm:py-2"
-            >
-              更新当前状态
-            </button>
-            <div className="flex flex-col items-stretch gap-1 sm:items-start">
-              <DiaryEntryButton onClick={() => setDiaryOpen(true)} />
-              {diaryHasTodayEntry === false ? (
-                <p className="mt-1 text-[11px] leading-snug text-stone-500">
-                  今天也可以给自己留一点记录。
-                  <br />
-                  如果你愿意，也可以把今天记下来。
-                </p>
-              ) : null}
-            </div>
-          </div>
-          <div className="flex items-end gap-1.5 rounded-2xl border border-stone-200/50 bg-[#f3f0ea]/75 px-1 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] sm:gap-2 sm:px-1.5 sm:py-2">
-            <div className="flex min-w-0 flex-1 flex-col">
-              <label htmlFor="chat-input" className="sr-only">
-                输入消息
-              </label>
-              <input
-                id="chat-input"
-                type="text"
-                name="message"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="想说什么都可以……"
-                className="min-h-[48px] w-full rounded-2xl border border-stone-200/80 bg-white px-4 py-3 text-base text-stone-800 placeholder:text-stone-400 outline-none ring-0 transition-shadow focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.12)] sm:text-[15px]"
-                autoComplete="off"
+        <div className="mx-auto flex max-w-lg flex-col gap-2">
+          <div className="flex items-end gap-2">
+            <div className="shrink-0 lg:hidden">
+              <ProgressPlantAndLetters
+                density="inline"
+                stage={progressStage}
+                hasUnread={progressHasUnread}
+                onOpenLetters={() => setProgressPanelOpen(true)}
+                onOpenLatestUnread={openLatestUnreadLetter}
               />
             </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="min-h-[48px] shrink-0 rounded-2xl bg-stone-600 px-5 py-3 text-sm font-medium text-stone-50 transition-colors hover:bg-stone-700 active:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-0 sm:px-4"
-            >
-              {loading ? "发送中…" : "发送"}
-            </button>
+            <div className="flex min-w-0 flex-1 items-end gap-1.5 rounded-2xl border border-stone-200/50 bg-[#f3f0ea]/75 px-1 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] sm:gap-2 sm:px-1.5 sm:py-2">
+              <div className="flex min-w-0 flex-1 flex-col">
+                <label htmlFor="chat-input" className="sr-only">
+                  输入消息
+                </label>
+                <input
+                  id="chat-input"
+                  type="text"
+                  name="message"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  placeholder="想说什么都可以……"
+                  className="min-h-[48px] w-full rounded-2xl border border-stone-200/80 bg-white px-4 py-3 text-base text-stone-800 placeholder:text-stone-400 outline-none ring-0 transition-shadow focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.12)] sm:text-[15px]"
+                  autoComplete="off"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="min-h-[48px] shrink-0 rounded-2xl bg-stone-600 px-5 py-3 text-sm font-medium text-stone-50 transition-colors hover:bg-stone-700 active:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-0 sm:px-4"
+              >
+                {loading ? "发送中…" : "发送"}
+              </button>
+            </div>
           </div>
           {errorMessage ? (
             <p className="text-xs text-red-700" role="alert">
@@ -971,6 +1009,7 @@ export default function ChatPage() {
       </div>
 
       <aside
+        id="chat-daily-recovery-sidebar"
         className="hidden h-dvh w-[min(20rem,36vw)] shrink-0 border-l border-stone-200/60 bg-[#f7f4ef] lg:block"
         aria-label="日常恢复侧栏"
       >
@@ -985,6 +1024,7 @@ export default function ChatPage() {
       <div className="pointer-events-none fixed bottom-5 left-4 z-40 hidden lg:block lg:left-5">
         <div className="pointer-events-auto flex items-end gap-2">
           <ProgressPlantAndLetters
+            density="floating"
             stage={progressStage}
             hasUnread={progressHasUnread}
             onOpenLetters={() => setProgressPanelOpen(true)}
@@ -1228,7 +1268,6 @@ export default function ChatPage() {
           onClose={() => setDiaryOpen(false)}
           onSaved={() => {
             void loadProgress();
-            void reloadDiaryStatus();
             window.setTimeout(() => {
               void loadProgress();
             }, 3000);
@@ -1236,48 +1275,10 @@ export default function ChatPage() {
         />
       ) : null}
 
-      <nav
-        aria-label="底部功能"
-        className="fixed inset-x-0 bottom-0 z-[38] border-t border-stone-200/70 bg-[#fbf9f5]/96 backdrop-blur-md lg:hidden"
-        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-      >
-        <div className="mx-auto grid h-[var(--mobile-nav-height)] max-w-lg grid-cols-3 divide-x divide-stone-200/60">
-          <button
-            type="button"
-            onClick={() => scrollChatToLatest()}
-            className="flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-stone-700 transition-colors active:bg-stone-200/40 min-h-[3.25rem]"
-          >
-            对话
-          </button>
-          <button
-            type="button"
-            onClick={() => setDailyRecoveryOpen(true)}
-            className="flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-stone-700 transition-colors active:bg-stone-200/40 min-h-[3.25rem]"
-          >
-            日常恢复
-          </button>
-          <button
-            type="button"
-            onClick={() => setProgressPanelOpen(true)}
-            className="relative flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-stone-700 transition-colors active:bg-stone-200/40 min-h-[3.25rem]"
-          >
-            <span className="flex items-center gap-1">
-              成长来信
-              {progressHasUnread ? (
-                <span
-                  aria-label="有新的来信"
-                  className="inline-block h-2 w-2 shrink-0 rounded-full bg-rose-400 shadow-sm"
-                />
-              ) : null}
-            </span>
-          </button>
-        </div>
-      </nav>
-
       {toast ? (
         <div
           role="status"
-          className={`fixed bottom-[calc(1rem+env(safe-area-inset-bottom)+var(--mobile-nav-height))] left-1/2 z-[60] max-w-[min(calc(100vw-2rem),24rem)] -translate-x-1/2 rounded-xl border px-4 py-2.5 text-center text-sm shadow-lg lg:bottom-[calc(1.25rem+env(safe-area-inset-bottom))] ${
+          className={`fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 z-[60] max-w-[min(calc(100vw-2rem),24rem)] -translate-x-1/2 rounded-xl border px-4 py-2.5 text-center text-sm shadow-lg lg:bottom-[calc(1.25rem+env(safe-area-inset-bottom))] ${
             toast.kind === "success"
               ? "border-emerald-200/80 bg-emerald-50/95 text-emerald-900"
               : "border-red-200/80 bg-red-50/95 text-red-900"
