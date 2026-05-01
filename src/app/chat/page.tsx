@@ -63,6 +63,15 @@ function lastAssistantMessage(messages: readonly ChatMessage[]): ChatMessage | n
   return null;
 }
 
+/** Avoids crashing on browsers where `crypto.randomUUID` is missing (e.g. older WebViews). */
+function generateLocalChatMessageId(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") {
+    return c.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function FeedbackIconButton({ onOpen }: { onOpen: () => void }) {
   const [hintVisible, setHintVisible] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -407,17 +416,18 @@ export default function ChatPage() {
     if (!trimmed) return;
 
     setErrorMessage(null);
-    setLoading(true);
-
-    const userMsg: ChatMessage = {
-      id: `local-${crypto.randomUUID()}`,
-      role: "user",
-      text: trimmed,
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    setInputText("");
 
     try {
+      setLoading(true);
+
+      const userMsg: ChatMessage = {
+        id: `local-${generateLocalChatMessageId()}`,
+        role: "user",
+        text: trimmed,
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      setInputText("");
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
