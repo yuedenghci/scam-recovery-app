@@ -1,0 +1,10 @@
+id,userId,eventType,scoreDelta,eventDate,eventDay,sourceId,metadata,createdAt
+cmolbr3pv007unsaveobu8g89,cmolbjuj6002onsavkiy61x2w,checkin,1,2026-04-30 10:11:56.175,2026-04-30,cmolbr3po007snsav15gjzbiv,,2026-04-30 10:11:56.179
+cmolcqakm009ansaven8ti5ce,cmolbjuj6002onsavkiy61x2w,tiny_step_done,1,2026-04-30 10:39:18.02,2026-04-30,cmolcqakf0096nsav4rk1mdhe,"{""status"": ""done"", ""dailyRecoveryId"": ""cmolca3j6008cnsavpnwh62ry""}",2026-04-30 10:39:18.023
+cmolcr8nx00a0nsavjk5bfwco,cmolbjuj6002onsavkiy61x2w,tiny_step_partial,0.5,2026-04-30 10:40:02.203,2026-04-30,cmolcr8nq009wnsavdl34b9z3,"{""status"": ""partial"", ""dailyRecoveryId"": ""cmolcr531009qnsav65kbyf6p""}",2026-04-30 10:40:02.206
+cmolcuu6s00aknsavbd4j2kos,cmolbjuj6002onsavkiy61x2w,tiny_step_done,1,2026-04-30 10:42:50.066,2026-04-30,cmolcuu6l00agnsavnwxb5nc9,"{""status"": ""done"", ""dailyRecoveryId"": ""cmolcurim00aansavua8dh0gh""}",2026-04-30 10:42:50.068
+cmolcy1sj00b2nsav7lh2cnnf,cmolbjuj6002onsavkiy61x2w,diary,2,2026-04-30 10:45:19.887,2026-04-30,cmolcy1sc00b0nsavabfsadh8,,2026-04-30 10:45:19.891
+cmomg3q1900bynsavinichux8,cmolbjuj6002onsavkiy61x2w,checkin,1,2026-05-01 05:01:29.61,2026-05-01,cmomg3q1300bwnsavb612vnvb,,2026-05-01 05:01:29.614
+cmomgsten003pnsvzw0q56tj6,cmolaq48o0002nswfhjwabxx7,checkin,1,2026-05-01 05:21:00.378,2026-05-01,cmomgstef003nnsvzvw8vtvd1,,2026-05-01 05:21:00.383
+cmomguqpz004hnsvz56p4yrat,cmolaq48o0002nswfhjwabxx7,tiny_step_done,1,2026-05-01 05:22:30.213,2026-05-01,cmomguqps004dnsvzdygymw8i,"{""status"": ""done"", ""dailyRecoveryId"": ""cmomguopi0047nsvzqm19ridj""}",2026-05-01 05:22:30.215
+cmomgv3wr004pnsvzu9on29id,cmolaq48o0002nswfhjwabxx7,diary,2,2026-05-01 05:22:47.303,2026-05-01,cmomgv3wl004nnsvzaq878tq8,,2026-05-01 05:22:47.307

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/auth";
+import { getShanghaiDayKey } from "@/lib/dayKey";
 import {
   maybeGenerateProgressLetter,
   recomputeRecoveryProgressState,
@@ -18,7 +19,7 @@ export async function GET() {
   try {
     const userId = await getCurrentUserId();
     if (!userId) {
-      return Response.json({ ok: true, currentState: null });
+      return Response.json({ ok: true, currentState: null, isToday: false });
     }
     const row = await prisma.currentState.findFirst({
       where: { userId },
@@ -26,8 +27,15 @@ export async function GET() {
     })
 
     if (!row) {
-      return Response.json({ ok: true, currentState: null })
+      return Response.json({
+        ok: true,
+        currentState: null,
+        isToday: false,
+      });
     }
+
+    const isToday =
+      getShanghaiDayKey(row.createdAt) === getShanghaiDayKey(new Date());
 
     return Response.json({
       ok: true,
@@ -37,6 +45,7 @@ export async function GET() {
         spatial: row.spatial,
         createdAt: row.createdAt,
       },
+      isToday,
     })
   } catch (error) {
     console.error("Failed to process current state (GET):", error)

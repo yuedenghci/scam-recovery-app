@@ -10,6 +10,7 @@ import {
 import { useRouter } from "next/navigation";
 
 import { DailyRecoveryPanel } from "@/app/chat/DailyRecoveryPanel";
+import { getShanghaiDayKey } from "@/lib/dayKey";
 import { DiaryModal } from "@/components/diary/DiaryModal";
 import { ProgressPlantAndLetters } from "@/components/progress/PlantWidget";
 import {
@@ -304,6 +305,7 @@ export default function ChatPage() {
   const [dailyRecoveryOpen, setDailyRecoveryOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [currentStateLoaded, setCurrentStateLoaded] = useState(false);
+  const [chatHistoryLoaded, setChatHistoryLoaded] = useState(false);
   const [currentStateRequired, setCurrentStateRequired] = useState(false);
   const [savedCurrentState, setSavedCurrentState] = useState<CurrentStateSaved>(
     EMPTY_CURRENT_STATE_SAVED,
@@ -363,6 +365,49 @@ export default function ChatPage() {
     router.push("/login");
     router.refresh();
   }, [router]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/chat/history");
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          messages?: unknown;
+        };
+        if (!res.ok) return;
+
+        const raw = Array.isArray(data.messages) ? data.messages : [];
+        const mapped: ChatMessage[] = [];
+        for (const item of raw) {
+          if (typeof item !== "object" || item === null) continue;
+          const o = item as Record<string, unknown>;
+          const id = typeof o.id === "string" ? o.id : "";
+          const role = o.role;
+          const text = typeof o.text === "string" ? o.text : "";
+          if (!id || (role !== "user" && role !== "assistant") || text === "") continue;
+          const suggestedRaw = o.suggestedAction;
+          const suggestedAction =
+            typeof suggestedRaw === "string" && suggestedRaw.trim() !== ""
+              ? suggestedRaw.trim()
+              : null;
+          mapped.push({
+            id,
+            role,
+            text,
+            ...(suggestedAction ? { suggestedAction } : {}),
+          });
+        }
+
+        if (mapped.length > 0) {
+          setMessages(mapped);
+        }
+      } catch {
+        // Fallback: greeting effect runs after `chatHistoryLoaded`.
+      } finally {
+        setChatHistoryLoaded(true);
+      }
+    })();
+  }, []);
 
   const loadProgress = useCallback(async () => {
     try {
@@ -900,19 +945,9 @@ export default function ChatPage() {
     void (async () => {
       try {
         const res = await fetch("/api/current-state");
-        const data = (await res.json()) as
-          | { ok?: boolean; currentState?: null | { emotional: string | null; physical: string | null; spatial: string | null; createdAt: string } }
-          | { ok?: boolean };
-
-        if (!res.ok || (data as { ok?: boolean }).ok === false) {
-          setCurrentStateLoaded(true);
-          setCurrentStateRequired(true);
-          setPanelOpen(true);
-          return;
-        }
-
-        const typedData = data as {
+        const data = (await res.json()) as {
           ok?: boolean;
+          isToday?: boolean;
           currentState?: null | {
             emotional: string | null;
             physical: string | null;
@@ -920,6 +955,15 @@ export default function ChatPage() {
             createdAt: string;
           };
         };
+
+        if (!res.ok || data.ok === false) {
+          setCurrentStateLoaded(true);
+          setCurrentStateRequired(true);
+          setPanelOpen(true);
+          return;
+        }
+
+        const typedData = data;
         const cs = typedData.currentState ?? null;
         if (cs) {
           setSavedCurrentState({
@@ -929,15 +973,14 @@ export default function ChatPage() {
           });
           setCurrentStateLastSavedAt(typeof cs.createdAt === "string" ? cs.createdAt : null);
 
-          const savedDate = cs.createdAt ? new Date(cs.createdAt) : null;
-          const today = new Date();
-          const isSameDay =
-            savedDate &&
-            savedDate.getFullYear() === today.getFullYear() &&
-            savedDate.getMonth() === today.getMonth() &&
-            savedDate.getDate() === today.getDate();
+          let required = true;
+          if (typeof typedData.isToday === "boolean") {
+            required = !typedData.isToday;
+          } else if (typeof cs.createdAt === "string") {
+            required =
+              getShanghaiDayKey(new Date(cs.createdAt)) !== getShanghaiDayKey(new Date());
+          }
 
-          const required = !isSameDay;
           setCurrentStateRequired(required);
           setPanelOpen(required);
         } else {
@@ -969,14 +1012,14 @@ export default function ChatPage() {
   }, [moreMenuOpen]);
 
   useEffect(() => {
-    if (!currentStateLoaded) return;
+    if (!currentStateLoaded || !chatHistoryLoaded) return;
     if (panelOpen) return;
     if (messages.length !== 0) return;
     // 先自然打招呼，再让用户开始聊。
     setMessages([
       { id: "assistant-greeting-local", role: "assistant", text: "嗨，今天想从哪里开始聊呢？" },
     ]);
-  }, [currentStateLoaded, panelOpen, messages.length]);
+  }, [currentStateLoaded, chatHistoryLoaded, panelOpen, messages.length]);
 
   return (
     <div

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/auth";
+import { getShanghaiEndOfDay, getShanghaiStartOfDay } from "@/lib/dayKey";
 import { generateDailyRecoveryCandidates } from "@/lib/generateDailyRecoveryCandidates";
 import {
   maybeGenerateProgressLetter,
@@ -53,10 +54,11 @@ type PostBody = {
   continuationReminderTime?: unknown;
 };
 
-function startOfToday(): Date {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
+function shanghaiTodayRange(now = new Date()) {
+  return {
+    start: getShanghaiStartOfDay(now),
+    end: getShanghaiEndOfDay(now),
+  };
 }
 
 export async function GET() {
@@ -69,6 +71,8 @@ export async function GET() {
       );
     }
 
+    const { start: todayStart, end: todayEnd } = shanghaiTodayRange();
+
     const [tasks, todayLogs, logCountGroups] = await Promise.all([
       prisma.dailyRecovery.findMany({
         where: {
@@ -80,7 +84,7 @@ export async function GET() {
       prisma.dailyRecoveryStatusLog.findMany({
         where: {
           userId,
-          createdAt: { gte: startOfToday() },
+          createdAt: { gte: todayStart, lt: todayEnd },
         },
         select: {
           dailyRecoveryId: true,
@@ -614,11 +618,13 @@ export async function POST(request: Request) {
         where: { dailyRecoveryId: taskId, userId },
       });
 
+      const { start: todayStart, end: todayEnd } = shanghaiTodayRange();
+
       const existingLog = await prisma.dailyRecoveryStatusLog.findFirst({
         where: {
           userId,
           dailyRecoveryId: taskId,
-          createdAt: { gte: startOfToday() },
+          createdAt: { gte: todayStart, lt: todayEnd },
         },
       });
 

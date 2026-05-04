@@ -2,8 +2,8 @@ import { after } from "next/server";
 
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/auth";
+import { getShanghaiDayKey } from "@/lib/dayKey";
 import {
-  getNaturalDayKey,
   maybeGenerateProgressLetter,
   recomputeRecoveryProgressState,
   recordProgressEvent,
@@ -25,7 +25,7 @@ export async function GET() {
         { status: 401 },
       );
     }
-    const todayKey = getNaturalDayKey();
+    const todayKey = getShanghaiDayKey();
 
     const [today, recent] = await Promise.all([
       prisma.diaryEntry.findUnique({
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
       return Response.json({ ok: false, error: "日记内容不能为空" }, { status: 400 });
     }
 
-    const todayKey = getNaturalDayKey();
+    const todayKey = getShanghaiDayKey();
     const existing = await prisma.diaryEntry.findUnique({
       where: { userId_entryDay: { userId, entryDay: todayKey } },
     });

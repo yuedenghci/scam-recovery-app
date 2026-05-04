@@ -1,0 +1,5 @@
+id,userId,recoveryDomain,difficultyNote,currentTaskText,updatedAt,createdAt,customDomain,isDeleted,reminderEnabled,reminderTime,continuationDays,continuationReminderEnabled,continuationReminderTime,continuationPromptDismissed
+cmolca3j6008cnsavpnwh62ry,cmolbjuj6002onsavkiy61x2w,睡眠,睡不着我,闭上眼睛，用指尖轻轻按揉眉头中间10秒,2026-04-30 10:39:20.232,2026-04-30 10:26:42.402,,f,t,09:30,,,,t
+cmolcr531009qnsav65kbyf6p,cmolbjuj6002onsavkiy61x2w,运动,不爱动,用指尖轻敲大腿和小腿的肌肉放松下,2026-04-30 10:40:03.735,2026-04-30 10:39:57.566,,f,f,,,,,t
+cmolcurim00aansavua8dh0gh,cmolbjuj6002onsavkiy61x2w,其他,自选小任务,喝点水,2026-04-30 10:42:51.492,2026-04-30 10:42:46.607,自选小任务,f,f,,,,,t
+cmomguopi0047nsvzqm19ridj,cmolaq48o0002nswfhjwabxx7,睡眠,睡不着,拿一本最薄的书，只读一页就轻轻合起来,2026-05-01 05:22:34.07,2026-05-01 05:22:27.606,,f,f,,,,,t

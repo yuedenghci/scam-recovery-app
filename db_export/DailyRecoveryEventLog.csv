@@ -1,0 +1,22 @@
+id,userId,dailyRecoveryId,eventType,detail,createdAt
+cmolc9twr008ansavzqy7j8ym,cmolbjuj6002onsavkiy61x2w,,generate_candidates,"{""candidates"": [""闭上眼睛，用指尖轻轻按揉眉头中间10秒"", ""慢慢做3次只留意鼻子吸气呼气的深呼吸"", ""把面前的笔或橡皮轻轻摆成整齐的小队伍""], ""suggestion"": null, ""difficultyNote"": ""睡不着我"", ""recoveryDomain"": ""睡眠""}",2026-04-30 10:26:29.931
+cmolca3j9008ensav8tmnd32c,cmolbjuj6002onsavkiy61x2w,cmolca3j6008cnsavpnwh62ry,create_task,"{""difficultyNote"": ""睡不着我"", ""recoveryDomain"": ""睡眠"", ""selectedTaskText"": ""闭上眼睛，用指尖轻轻按揉眉头中间10秒""}",2026-04-30 10:26:42.406
+cmolca5us008gnsav5a5nd37s,cmolbjuj6002onsavkiy61x2w,cmolca3j6008cnsavpnwh62ry,set_task_reminder,"{""reminderTime"": ""09:30"", ""reminderEnabled"": true}",2026-04-30 10:26:45.413
+cmolcqaki0098nsavh4o2o8xs,cmolbjuj6002onsavkiy61x2w,cmolca3j6008cnsavpnwh62ry,update_status,"{""status"": ""done""}",2026-04-30 10:39:18.019
+cmolcqca2009ensav6bhw22eq,cmolbjuj6002onsavkiy61x2w,cmolca3j6008cnsavpnwh62ry,dismiss_continuation_prompt,{},2026-04-30 10:39:20.235
+cmolcqm0k009gnsavtx18579p,cmolbjuj6002onsavkiy61x2w,,click_add_task,{},2026-04-30 10:39:32.853
+cmolcr149009onsavk3y9potz,cmolbjuj6002onsavkiy61x2w,,generate_candidates,"{""candidates"": [""坐着轻轻转动脚踝，顺时针逆时针各转3圈"", ""起身走到窗边，伸个10秒以内的懒腰"", ""用指尖轻敲大腿和小腿的肌肉放松下""], ""suggestion"": null, ""difficultyNote"": ""不爱动"", ""recoveryDomain"": ""运动""}",2026-04-30 10:39:52.425
+cmolcr535009snsavyxvywer1,cmolbjuj6002onsavkiy61x2w,cmolcr531009qnsav65kbyf6p,create_task,"{""difficultyNote"": ""不爱动"", ""recoveryDomain"": ""运动"", ""selectedTaskText"": ""用指尖轻敲大腿和小腿的肌肉放松下""}",2026-04-30 10:39:57.569
+cmolcr691009unsavbyvav6w7,cmolbjuj6002onsavkiy61x2w,cmolcr531009qnsav65kbyf6p,set_task_reminder,"{""reminderTime"": null, ""reminderEnabled"": false}",2026-04-30 10:39:59.077
+cmolcr8nt009ynsavljjchule,cmolbjuj6002onsavkiy61x2w,cmolcr531009qnsav65kbyf6p,update_status,"{""status"": ""partial""}",2026-04-30 10:40:02.202
+cmolcr9uh00a6nsav9eikrsbn,cmolbjuj6002onsavkiy61x2w,cmolcr531009qnsav65kbyf6p,dismiss_continuation_prompt,{},2026-04-30 10:40:03.737
+cmolcumrj00a8nsav9sjfrshh,cmolbjuj6002onsavkiy61x2w,,click_add_task,{},2026-04-30 10:42:40.447
+cmolcuriq00acnsavd5yi8mfl,cmolbjuj6002onsavkiy61x2w,cmolcurim00aansavua8dh0gh,create_task_custom_own,"{""selectedTaskText"": ""喝点水""}",2026-04-30 10:42:46.61
+cmolcusos00aensavmrhse2ez,cmolbjuj6002onsavkiy61x2w,cmolcurim00aansavua8dh0gh,set_task_reminder,"{""reminderTime"": null, ""reminderEnabled"": false}",2026-04-30 10:42:48.124
+cmolcuu6o00ainsav0aajt0m9,cmolbjuj6002onsavkiy61x2w,cmolcurim00aansavua8dh0gh,update_status,"{""status"": ""done""}",2026-04-30 10:42:50.064
+cmolcuvae00aonsavjtu7ags5,cmolbjuj6002onsavkiy61x2w,cmolcurim00aansavua8dh0gh,dismiss_continuation_prompt,{},2026-04-30 10:42:51.495
+cmomgumpu0045nsvz8raq86tg,cmolaq48o0002nswfhjwabxx7,,generate_candidates,"{""candidates"": [""拿一本最薄的书，只读一页就轻轻合起来"", ""选一本简单绘本，看三幅插画就放下"", ""找一段熟悉的旧文字，轻声念两句就停""], ""suggestion"": null, ""difficultyNote"": ""睡不着"", ""recoveryDomain"": ""睡眠""}",2026-05-01 05:22:25.027
+cmomguopl0049nsvz76ehjea2,cmolaq48o0002nswfhjwabxx7,cmomguopi0047nsvzqm19ridj,create_task,"{""difficultyNote"": ""睡不着"", ""recoveryDomain"": ""睡眠"", ""selectedTaskText"": ""拿一本最薄的书，只读一页就轻轻合起来""}",2026-05-01 05:22:27.61
+cmomgupqz004bnsvz8uzkj3uz,cmolaq48o0002nswfhjwabxx7,cmomguopi0047nsvzqm19ridj,set_task_reminder,"{""reminderTime"": null, ""reminderEnabled"": false}",2026-05-01 05:22:28.956
+cmomguqpv004fnsvzkktf1m94,cmolaq48o0002nswfhjwabxx7,cmomguopi0047nsvzqm19ridj,update_status,"{""status"": ""done""}",2026-05-01 05:22:30.211
+cmomgutp5004lnsvzagjkz2y4,cmolaq48o0002nswfhjwabxx7,cmomguopi0047nsvzqm19ridj,dismiss_continuation_prompt,{},2026-05-01 05:22:34.073

@@ -1,13 +1,15 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 
+import { getShanghaiDayKey, getShanghaiStartOfDay } from "@/lib/dayKey";
 import { prisma } from "@/lib/prisma";
 import { callProgressLetterLLM } from "@/lib/callProgressLetterLLM";
 
 type DbLike = PrismaClient | Prisma.TransactionClient;
 
 //const LETTER_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-const LETTER_INTERVAL_MS = 1 * 60 * 1000;
-const LETTER_LOOKBACK_DAYS = 7;
+const LETTER_INTERVAL_MS = 1 * 24 * 60 * 60 * 1000;
+//const LETTER_LOOKBACK_DAYS = 7;
+const LETTER_LOOKBACK_DAYS = 1;
 
 
 /** Earliest recovery progress trace (any recovery-progress event). */
@@ -50,21 +52,19 @@ export const RECOVERY_EVENT_TYPES = {
 } as const;
 
 export function getNaturalDayKey(date: Date = new Date()): string {
-  const y = date.getFullYear();
-  const m = `${date.getMonth() + 1}`.padStart(2, "0");
-  const d = `${date.getDate()}`.padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return getShanghaiDayKey(date);
 }
 
+/** Shanghai calendar day start in UTC — prefer `getShanghaiStartOfDay` from `@/lib/dayKey`. */
 export function getNaturalDayStart(date: Date = new Date()): Date {
-  return new Date(`${getNaturalDayKey(date)}T00:00:00`);
+  return getShanghaiStartOfDay(date);
 }
 
 export function getStageFromScore(score: number): number {
-  if (score >= 5) return 4;
-  if (score >= 3) return 3;
-  if (score >= 2) return 2;
-  if (score >= 1) return 1;
+  if (score >= 40) return 4;
+  if (score >= 30) return 3;
+  if (score >= 20) return 2;
+  if (score >= 10) return 1;
   return 0;
 }
 
