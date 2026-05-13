@@ -12,12 +12,9 @@ function encodeSse(event: string, data: unknown) {
   );
 }
 
-//const FIVE_MIN_MS = 5 * 60 * 1000;
-//const SIX_H_MS = 6 * 60 * 60 * 1000;
-//const TWENTY_FOUR_H_MS = 24 * 60 * 60 * 1000;
-const FIVE_MIN_MS = 1 * 60 * 1000;
-const SIX_H_MS = 2 * 60 * 1000;
-const TWENTY_FOUR_H_MS = 5 * 60 * 1000;
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const SIX_H_MS = 6 * 60 * 60 * 1000;
+const TWENTY_FOUR_H_MS = 24 * 60 * 60 * 1000;
 
 export async function POST(request: Request) {
   try {

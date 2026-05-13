@@ -20,7 +20,7 @@ export function formatUserSupportContextForSystemPrompt(
   c: UserSupportContextFields
 ): string {
   const lines: string[] = [
-    "【用户 onboarding 时整理好的支持设定（优先依据；若与聊天冲突，以这里为准，除非用户当场明确说改）】",
+    "【用户 onboarding 时整理好的支持设定】",
   ];
   for (const m of RIGHT_PANEL_MODULES) {
     const text = (c[m.key] ?? "").replace(/\r\n/g, "\n").trim();

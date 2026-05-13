@@ -178,6 +178,25 @@ export async function PUT(request: Request) {
       const levelChanged =
         levelIncoming && newLevel !== (existing?.proactiveLevel ?? "");
 
+      /** proactiveLevel 相对 DB 有变化时，必须用新文案重算档位，忽略请求里的旧 proactivePreference。 */
+      let proactivePreferenceResolved:
+        | "passive"
+        | "moderate"
+        | "active"
+        | null
+        | undefined;
+      if (levelChanged) {
+        try {
+          proactivePreferenceResolved =
+            await inferProactivePreferenceFromLevelText(newLevel ?? "");
+        } catch (e) {
+          console.error("infer proactivePreference failed:", e);
+          proactivePreferenceResolved = "moderate";
+        }
+      } else {
+        proactivePreferenceResolved = prefNorm;
+      }
+
       await prisma.userSupportContext.upsert({
         where: { userId },
         create: {
@@ -189,8 +208,7 @@ export async function PUT(request: Request) {
           expectedRole: s.expectedRole ?? "",
           toneStyle: s.toneStyle ?? "",
           proactiveLevel: s.proactiveLevel ?? "",
-          proactivePreference:
-            prefNorm === undefined ? null : prefNorm,
+          proactivePreference: proactivePreferenceResolved ?? null,
           helpGoals: s.helpGoals ?? "",
           manualModuleFlags: flags === null ? undefined : (flags as object),
         },
@@ -210,7 +228,9 @@ export async function PUT(request: Request) {
           ...(s.proactiveLevel !== undefined
             ? { proactiveLevel: s.proactiveLevel }
             : {}),
-          ...(prefNorm !== undefined ? { proactivePreference: prefNorm } : {}),
+          ...(proactivePreferenceResolved !== undefined
+            ? { proactivePreference: proactivePreferenceResolved }
+            : {}),
           ...(s.helpGoals !== undefined ? { helpGoals: s.helpGoals } : {}),
           ...(s.manualModuleFlags !== undefined
             ? {
@@ -222,20 +242,6 @@ export async function PUT(request: Request) {
             : {}),
         },
       });
-
-      if (levelChanged && prefNorm === undefined) {
-        try {
-          const inferred = await inferProactivePreferenceFromLevelText(
-            newLevel ?? "",
-          );
-          await prisma.userSupportContext.update({
-            where: { userId },
-            data: { proactivePreference: inferred },
-          });
-        } catch (e) {
-          console.error("infer proactivePreference failed:", e);
-        }
-      }
     }
 
     return Response.json({ ok: true });

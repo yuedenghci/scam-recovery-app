@@ -25,35 +25,28 @@ export async function GET() {
         { status: 401 },
       );
     }
-    const todayKey = getShanghaiDayKey();
 
-    const [today, recent] = await Promise.all([
-      prisma.diaryEntry.findUnique({
-        where: { userId_entryDay: { userId, entryDay: todayKey } },
-      }),
-      prisma.diaryEntry.findMany({
-        where: { userId },
-        orderBy: { createdAt: "desc" },
-        take: 7,
-      }),
-    ]);
+    const entries = await prisma.diaryEntry.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take: 80,
+      select: {
+        id: true,
+        content: true,
+        entryDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
 
     return Response.json({
       ok: true,
-      todayEntry: today
-        ? {
-            id: today.id,
-            content: today.content,
-            entryDay: today.entryDay,
-            createdAt: today.createdAt,
-            updatedAt: today.updatedAt,
-          }
-        : null,
-      recentEntries: recent.map((r) => ({
+      entries: entries.map((r) => ({
         id: r.id,
+        content: r.content,
         entryDay: r.entryDay,
-        contentPreview: r.content.slice(0, 120),
         createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
       })),
     });
   } catch (error) {
@@ -85,45 +78,33 @@ export async function POST(request: Request) {
     }
 
     const todayKey = getShanghaiDayKey();
-    const existing = await prisma.diaryEntry.findUnique({
-      where: { userId_entryDay: { userId, entryDay: todayKey } },
+
+    const entry = await prisma.diaryEntry.create({
+      data: { userId, content, entryDay: todayKey },
     });
 
-    let entry;
-    let firstSaveToday = false;
-    if (existing) {
-      entry = await prisma.diaryEntry.update({
-        where: { id: existing.id },
-        data: { content },
-      });
-    } else {
-      entry = await prisma.diaryEntry.create({
-        data: { userId, content, entryDay: todayKey },
-      });
-      firstSaveToday = true;
-    }
+    const progressResult = await recordProgressEvent({
+      userId,
+      eventType: RECOVERY_EVENT_TYPES.DIARY,
+      scoreDelta: 2,
+      sourceId: entry.id,
+      dedupeByDay: true,
+    });
 
-    if (firstSaveToday) {
-      await recordProgressEvent({
-        userId,
-        eventType: RECOVERY_EVENT_TYPES.DIARY,
-        scoreDelta: 2,
-        sourceId: entry.id,
-        dedupeByDay: true,
-      });
-      after(async () => {
-        try {
-          await recomputeRecoveryProgressState(userId);
+    after(async () => {
+      try {
+        await recomputeRecoveryProgressState(userId);
+        if (progressResult.created) {
           await maybeGenerateProgressLetter(userId);
-        } catch (err) {
-          console.error("diary recovery follow-up:", err);
         }
-      });
-    }
+      } catch (err) {
+        console.error("diary recovery follow-up:", err);
+      }
+    });
 
     return Response.json({
       ok: true,
-      firstSaveToday,
+      diaryProgressApplied: progressResult.created,
       diary: {
         id: entry.id,
         content: entry.content,

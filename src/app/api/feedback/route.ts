@@ -1,16 +1,6 @@
-import { buildGenerationContext } from "@/lib/buildGenerationContext";
-import { createDoubaoStream } from "@/lib/callDoubao";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/auth";
 import { summarizeFeedbackNote } from "@/lib/summarizeFeedbackNote";
-
-const encoder = new TextEncoder();
-
-function encodeSse(event: string, data: unknown) {
-  return encoder.encode(
-    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
-  );
-}
 
 export async function POST(request: Request) {
   const userId = await getCurrentUserId();
@@ -130,184 +120,34 @@ export async function POST(request: Request) {
     );
   }
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const enqueue = (event: string, data: unknown) => {
-        try {
-          controller.enqueue(encodeSse(event, data));
-        } catch {
-          /* stream may be closed */
-        }
-      };
+  try {
+    const llmNote = await summarizeFeedbackNote({
+      feedbackSource: "panel",
+      selectedReason: reasonStr,
+      otherText: otherTextStored,
+      assistantReplyText: assistantStr,
+      currentStateSnapshot,
+    });
 
-      try {
-        const llmNote = await summarizeFeedbackNote({
-          feedbackSource: "panel",
-          selectedReason: reasonStr,
-          otherText: otherTextStored,
-          assistantReplyText: assistantStr,
-          currentStateSnapshot,
-        });
+    await prisma.feedbackRecord.create({
+      data: {
+        userId,
+        feedbackSource: "panel",
+        messageId: resolvedMessageId,
+        selectedReason: reasonStr,
+        otherText: otherTextStored,
+        assistantReplyText: assistantStr,
+        currentStateSnapshot,
+        llmNote,
+      },
+    });
 
-        const pendingFeedback = await prisma.feedbackRecord.create({
-          data: {
-            userId,
-            feedbackSource: "panel",
-            messageId: resolvedMessageId,
-            selectedReason: reasonStr,
-            otherText: otherTextStored,
-            assistantReplyText: assistantStr,
-            revisedAssistantReplyText: null,
-            currentStateSnapshot,
-            llmNote,
-          },
-        });
-
-        const [
-          supportContext,
-          currentState,
-          recentPanelFeedbackNotes,
-          recentExplicitFeedbackNotes,
-        ] = await Promise.all([
-          (prisma as typeof prisma & {
-            userSupportContext: {
-              findUnique: (args: { where: { userId: string } }) => Promise<{
-                scamSituation: string;
-                scamImpact: string;
-                personality: string;
-                likedActivities: string;
-                expectedRole: string;
-                toneStyle: string;
-                proactiveLevel: string;
-                helpGoals: string;
-              } | null>;
-            };
-          }).userSupportContext.findUnique({
-            where: { userId },
-          }),
-          prisma.currentState.findFirst({
-            where: { userId },
-            orderBy: { createdAt: "desc" },
-          }),
-          prisma.feedbackRecord.findMany({
-            where: {
-              userId,
-              feedbackSource: "panel",
-              llmNote: { not: null },
-            },
-            orderBy: { createdAt: "desc" },
-            take: 10,
-          }),
-          prisma.feedbackRecord.findMany({
-            where: {
-              userId,
-              feedbackSource: "explicit_text",
-              llmNote: { not: null },
-            },
-            orderBy: { createdAt: "desc" },
-            take: 10,
-          }),
-        ]);
-
-        const panelFeedbackNotes = recentPanelFeedbackNotes
-          .map((item) => item.llmNote?.trim() ?? "")
-          .filter(Boolean);
-
-        const explicitFeedbackNotes = recentExplicitFeedbackNotes
-          .map((item) => item.llmNote?.trim() ?? "")
-          .filter(Boolean);
-
-        const recentChatHistoryDesc = (await prisma.message.findMany({
-          where: { userId },
-          orderBy: { createdAt: "desc" },
-          take: 20,
-        })) as Array<{ id: string; role: string; content: string }>;
-
-        const recentChatHistory = recentChatHistoryDesc.reverse();
-
-        const priorConversation = recentChatHistory
-          .filter((msg) => msg.role === "user" || msg.role === "assistant")
-          .map((msg) => ({
-            role: msg.role as "user" | "assistant",
-            content: msg.content,
-          }));
-
-        const generationContext = {
-          ...buildGenerationContext(
-            supportContext,
-            currentState,
-            "",
-            panelFeedbackNotes,
-            explicitFeedbackNotes,
-            priorConversation,
-          ),
-          noNewUserMessage: true as const,
-        };
-
-        const completionStream = await createDoubaoStream(generationContext);
-
-        let accumulatedRaw = "";
-        for await (const chunk of completionStream) {
-          if (request.signal.aborted) {
-            break;
-          }
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (typeof delta === "string" && delta.length > 0) {
-            accumulatedRaw += delta;
-            enqueue("delta", { text: delta });
-          }
-        }
-
-        if (request.signal.aborted) {
-          return;
-        }
-
-        const revisedText = accumulatedRaw.trim();
-        if (!revisedText) {
-          enqueue("error", {
-            message: "暂时无法生成修订回复，请稍后再试",
-          });
-          return;
-        }
-
-        const revisedMessage = await prisma.message.create({
-          data: {
-            userId,
-            role: "assistant",
-            content: revisedText,
-            mode: "feedback_revision",
-          },
-        });
-
-        await prisma.feedbackRecord.update({
-          where: { id: pendingFeedback.id },
-          data: { revisedAssistantReplyText: revisedText },
-        });
-
-        enqueue("done", {
-          revisedMessageId: revisedMessage.id,
-          revisedText,
-        });
-      } catch (error) {
-        console.error("Failed to save feedback stream:", error);
-        enqueue("error", {
-          message: "提交失败，请稍后再试",
-        });
-      } finally {
-        try {
-          controller.close();
-        } catch {
-          /* ignore */
-        }
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-    },
-  });
+    return Response.json({ ok: true });
+  } catch (error) {
+    console.error("Failed to save panel feedback:", error);
+    return Response.json(
+      { ok: false, error: "提交失败，请稍后再试" },
+      { status: 500 },
+    );
+  }
 }

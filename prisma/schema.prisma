@@ -242,7 +242,7 @@ model DiaryEntry {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, entryDay])
+  @@index([userId, entryDay])
   @@index([userId, createdAt])
 }
 

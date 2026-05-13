@@ -139,7 +139,7 @@ function buildDoubaoMessages(context: DoubaoGenerationContext): ChatCompletionMe
           context.supplementaryContext.trim(),
         ].join("\n")
       : "";
-      
+
   const isNormalChat = !context.noNewUserMessage && mode !== "proactive_opening";
 
   const prompt = [
@@ -147,7 +147,6 @@ function buildDoubaoMessages(context: DoubaoGenerationContext): ChatCompletionMe
     isNormalChat
     ? "请优先回应用户刚刚说的话。其他信息是作为辅助参考，不要为了使用这些信息而偏离用户当前这句话。"
     : "",
-    "避免反复重复前几轮已经说过的话；如果需要延续，请自然接着说。",
     supplementary,
     feedbackNotesText
       ? [

@@ -241,6 +241,7 @@ function MultiSelectOptionGroupWithOther({
   otherText,
   onOtherTextChange,
   otherPlaceholder,
+  otherOptionLabel = "其他",
 }: {
   name: string;
   selectedValues: readonly string[];
@@ -250,9 +251,10 @@ function MultiSelectOptionGroupWithOther({
   otherText: string;
   onOtherTextChange: (v: string) => void;
   otherPlaceholder: string;
+  /** Option chip that opens the free-text field (e.g. "其他" or "其他地方"). */
+  otherOptionLabel?: string;
 }) {
-  const otherOption = "其他";
-  const showOther = selectedValues.includes(otherOption);
+  const showOther = selectedValues.includes(otherOptionLabel);
 
   return (
     <fieldset className="space-y-2">
@@ -291,7 +293,7 @@ function MultiSelectOptionGroupWithOther({
       {showOther ? (
         <div className="space-y-1.5">
           <label className="text-xs text-stone-500">
-            其他（你可以自由补充）
+            {otherOptionLabel === "其他地方" ? "具体位置" : "其他（你可以自由补充）"}
           </label>
           <textarea
             value={otherText}
@@ -339,6 +341,7 @@ const EMPTY_CURRENT_STATE_DRAFT: CurrentStateDraft = {
 function parseStoredMultiValue(
   stored: string,
   knownOptions: readonly string[],
+  otherOptionLabel: string = "其他",
 ): { selected: string[]; otherText: string } {
   const tokens = stored
     .split("、")
@@ -346,7 +349,7 @@ function parseStoredMultiValue(
     .filter(Boolean);
   if (tokens.length === 0) return { selected: [], otherText: "" };
 
-  const known = new Set(knownOptions.filter((x) => x !== "其他"));
+  const known = new Set(knownOptions.filter((x) => x !== otherOptionLabel));
   const selected: string[] = [];
   const otherTokens: string[] = [];
 
@@ -356,18 +359,19 @@ function parseStoredMultiValue(
   }
 
   const otherText = otherTokens.join("、");
-  if (otherText) selected.push("其他");
+  if (otherText) selected.push(otherOptionLabel);
   return { selected, otherText };
 }
 
 function formatMultiValueForStorage(
   selected: readonly string[],
   otherText: string,
+  otherOptionLabel: string = "其他",
 ): string {
   const trimmedOther = otherText.trim();
-  const withoutOther = selected.filter((x) => x !== "其他");
+  const withoutOther = selected.filter((x) => x !== otherOptionLabel);
 
-  if (selected.includes("其他")) {
+  if (selected.includes(otherOptionLabel)) {
     return [...withoutOther, trimmedOther].filter(Boolean).join("、");
   }
   return withoutOther.join("、");
@@ -600,16 +604,6 @@ export default function ChatPage() {
     [markLetterRead, progressLetters],
   );
 
-  const openLatestUnreadLetter = useCallback(() => {
-    const latestUnread = progressLetters.find((x) => !x.isRead) ?? null;
-    if (!latestUnread) {
-      setProgressPanelOpen(true);
-      return;
-    }
-    setSelectedLetter(latestUnread);
-    markLetterRead(latestUnread.id);
-  }, [markLetterRead, progressLetters]);
-
   const openFeedbackForLatestAssistant = useCallback(() => {
     const target = lastSubstantiveAssistantMessage(messages);
     if (!target) return;
@@ -761,52 +755,6 @@ export default function ChatPage() {
         return;
       }
 
-      const pollSuggestedAction = (assistantId: string) => {
-        void (async () => {
-          const maxAttempts = 6;
-          const delays = [600, 900, 1300, 1800, 2500]; // 总计最多约 6 秒
-
-          const tryOnce = async (attemptIndex: number) => {
-            if (attemptIndex >= maxAttempts) return;
-            try {
-              const r = await fetch(
-                `/api/chat/message?messageId=${encodeURIComponent(assistantId)}`,
-              );
-              if (!r.ok) throw new Error("not ok");
-              const payload = (await r.json().catch(() => ({}))) as {
-                ok?: boolean;
-                suggestedAction?: string | null;
-              };
-
-              const nextSug =
-                typeof payload.suggestedAction === "string"
-                  ? payload.suggestedAction.trim()
-                  : "";
-
-              if (nextSug) {
-                setMessages((prev) =>
-                  prev.map((m) => {
-                    if (m.id !== assistantId) return m;
-                    if (m.role !== "assistant") return m;
-                    return { ...m, suggestedAction: nextSug };
-                  }),
-                );
-                return;
-              }
-            } catch {
-              // 忽略单次失败，继续重试。
-            }
-
-            const delay = delays[attemptIndex] ?? delays[delays.length - 1];
-            window.setTimeout(() => {
-              void tryOnce(attemptIndex + 1);
-            }, delay);
-          };
-
-          void tryOnce(0);
-        })();
-      };
-
       try {
         const { sawDone, terminal } = await readSseStream(res.body, {
           onDelta: (delta) =>
@@ -850,8 +798,49 @@ export default function ChatPage() {
               }),
             );
 
-            const pollId = resolvedId ?? localAssistantId;
-            pollSuggestedAction(pollId);
+            const assistantDbId =
+              typeof resolvedId === "string" && resolvedId.trim() !== ""
+                ? resolvedId.trim()
+                : null;
+            // Poll DB for async suggestedAction: t+2s, then once more at t+5s if still missing.
+            if (assistantDbId) {
+              let suggestedFilled = false;
+              const fetchSuggestedFromDb = async () => {
+                try {
+                  const r = await fetch(
+                    `/api/chat/message?messageId=${encodeURIComponent(assistantDbId)}`,
+                  );
+                  if (!r.ok) return;
+                  const payload = (await r.json().catch(() => ({}))) as {
+                    ok?: boolean;
+                    suggestedAction?: string | null;
+                  };
+                  const nextSug =
+                    typeof payload.suggestedAction === "string"
+                      ? payload.suggestedAction.trim()
+                      : "";
+                  if (!nextSug) return;
+                  if (suggestedFilled) return;
+                  suggestedFilled = true;
+                  setMessages((prev) =>
+                    prev.map((m) => {
+                      if (m.id !== assistantDbId) return m;
+                      if (m.role !== "assistant") return m;
+                      return { ...m, suggestedAction: nextSug };
+                    }),
+                  );
+                } catch {
+                  // Non-fatal: suggestedAction may still be processing.
+                }
+              };
+              window.setTimeout(() => {
+                void fetchSuggestedFromDb();
+              }, 2000);
+              window.setTimeout(() => {
+                if (suggestedFilled) return;
+                void fetchSuggestedFromDb();
+              }, 5000);
+            }
           },
           onError: () => {
             setErrorMessage(null);
@@ -942,6 +931,7 @@ export default function ChatPage() {
     const spatialParsed = parseStoredMultiValue(
       savedCurrentState.spatial,
       SPATIAL_OPTIONS,
+      "其他地方",
     );
 
     setDraftCurrentState({
@@ -1033,18 +1023,7 @@ export default function ChatPage() {
     };
 
     closeFeedbackPanel();
-    showToast("success", "反馈已提交");
-
-    const localAssistantId = `local-feedback-${generateLocalChatMessageId()}`;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: localAssistantId,
-        role: "assistant",
-        text: "",
-        suggestedAction: null,
-      },
-    ]);
+    showToast("success", "收到反馈，我会按照这个调整。");
 
     try {
       const res = await fetch("/api/feedback", {
@@ -1058,124 +1037,26 @@ export default function ChatPage() {
         }),
       });
 
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as {
-          error?: string;
-        };
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+
+      if (!res.ok || data.ok === false) {
         const message =
           typeof data.error === "string" && data.error
             ? data.error
             : "提交失败，请稍后再试";
         showToast("error", message);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === localAssistantId
-              ? { ...m, text: ASSISTANT_STREAM_FAIL_HINT }
-              : m,
-          ),
-        );
-        return;
-      }
-
-      const contentType = res.headers.get("content-type") ?? "";
-      if (!contentType.includes("text/event-stream") || !res.body) {
-        showToast("error", "提交失败，请稍后再试");
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === localAssistantId
-              ? { ...m, text: ASSISTANT_STREAM_FAIL_HINT }
-              : m,
-          ),
-        );
-        return;
-      }
-
-      const { sawDone, terminal } = await readSseStream(res.body, {
-        onDelta: (delta) =>
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === localAssistantId ? { ...m, text: m.text + delta } : m,
-            ),
-          ),
-        onDone: (data) => {
-          const d = data as {
-            revisedMessageId?: unknown;
-            revisedText?: unknown;
-          };
-          const revisedMessageId =
-            typeof d.revisedMessageId === "string" ? d.revisedMessageId : null;
-          const revisedText =
-            typeof d.revisedText === "string" ? d.revisedText.trim() : "";
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== localAssistantId) return m;
-              const nextId = revisedMessageId ?? m.id;
-              return {
-                id: nextId,
-                role: "assistant" as const,
-                text: revisedText || m.text,
-                suggestedAction: null,
-              };
-            }),
-          );
-        },
-        onError: (data) => {
-          const msg =
-            typeof data === "object" &&
-            data !== null &&
-            "message" in data &&
-            typeof (data as { message: unknown }).message === "string"
-              ? (data as { message: string }).message.trim()
-              : "修订回复失败，请稍后再试";
-          showToast("error", msg || "修订回复失败，请稍后再试");
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === localAssistantId
-                ? {
-                    ...m,
-                    text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
-                    suggestedAction: null,
-                  }
-                : m,
-            ),
-          );
-        },
-      });
-
-      if (!sawDone && terminal !== "error") {
-        showToast("error", "提交失败，请稍后再试");
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === localAssistantId
-              ? {
-                  ...m,
-                  text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
-                  suggestedAction: null,
-                }
-              : m,
-          ),
-        );
       }
     } catch {
       showToast("error", "提交失败，请稍后再试");
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === localAssistantId
-            ? {
-                ...m,
-                text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
-                suggestedAction: null,
-              }
-            : m,
-        ),
-      );
     }
   }, [
     closeFeedbackPanel,
     feedbackMessage,
     feedbackOtherText,
     feedbackReasons,
-    setMessages,
     showToast,
   ]);
 
@@ -1200,18 +1081,18 @@ export default function ChatPage() {
 
     const needEmotionalOther = emotional.includes("其他");
     const needPhysicalOther = physical.includes("其他");
-    const needSpatialOther = spatial.includes("其他");
+    const needSpatialOther = spatial.includes("其他地方");
 
     if (needEmotionalOther && !emotionalOtherTrim) {
-      showToast("error", "情绪选了“其他”，请补充你的描述");
+      showToast("error", "情绪选了“其他”，请先写下你的感受");
       return;
     }
     if (needPhysicalOther && !physicalOtherTrim) {
-      showToast("error", "身体选了“其他”，请补充你的描述");
+      showToast("error", "身体感受选了“其他”，请先写下来");
       return;
     }
     if (needSpatialOther && !spatialOtherTrim) {
-      showToast("error", "空间选了“其他”，请补充你的描述");
+      showToast("error", "位置选了“其他地方”，请先写下你在哪里");
       return;
     }
 
@@ -1223,7 +1104,11 @@ export default function ChatPage() {
       physical,
       physicalOtherTrim,
     );
-    const spatialStored = formatMultiValueForStorage(spatial, spatialOtherTrim);
+    const spatialStored = formatMultiValueForStorage(
+      spatial,
+      spatialOtherTrim,
+      "其他地方",
+    );
 
     const previousSaved = prevSavedCurrentStateRef.current;
     setSavedCurrentState({
@@ -1258,7 +1143,9 @@ export default function ChatPage() {
           }
           throw new Error(message);
         }
-        void loadProgress();
+        window.setTimeout(() => {
+          void loadProgress();
+        }, 10000);
       } catch (e) {
         setSavedCurrentState(previousSaved);
         setCurrentStateRequired(true);
@@ -1489,7 +1376,7 @@ export default function ChatPage() {
       </div>
 
       <form
-        className="shrink-0 border-0 bg-[#f7f4ef] shadow-none ring-0 px-2 pb-[max(10px,calc(env(safe-area-inset-bottom)+10px))] pt-3 sm:px-3 lg:border-t lg:border-stone-200/60 lg:bg-[#fbf9f5]/92 lg:px-4 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] lg:pt-3 lg:backdrop-blur-sm"
+        className="shrink-0 border-0 bg-[#f7f4ef] shadow-none ring-0 px-2 pb-[max(10px,calc(env(safe-area-inset-bottom)+10px))] pt-3 sm:px-3 lg:border-t lg:border-stone-200/60 lg:bg-[#fbf9f5]/92 lg:px-4 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] lg:pt-3 lg:backdrop-blur-sm [--chat-input-height:92px]"
         onSubmit={(e) => {
           e.preventDefault();
           void handleSend();
@@ -1504,7 +1391,6 @@ export default function ChatPage() {
                   stage={progressStage}
                   hasUnread={progressHasUnread}
                   onOpenLetters={() => setProgressPanelOpen(true)}
-                  onOpenLatestUnread={openLatestUnreadLetter}
                 />
               </div>
             </div>
@@ -1550,7 +1436,9 @@ export default function ChatPage() {
         <DailyRecoveryPanel
           className="h-full border-l-0"
           onProgressChanged={() => {
-            void loadProgress();
+            window.setTimeout(() => {
+              void loadProgress();
+            }, 10000);
           }}
         />
       </aside>
@@ -1562,13 +1450,7 @@ export default function ChatPage() {
             stage={progressStage}
             hasUnread={progressHasUnread}
             onOpenLetters={() => setProgressPanelOpen(true)}
-            onOpenLatestUnread={openLatestUnreadLetter}
           />
-          {progressHasUnread ? (
-            <p className="font-progress-letter pointer-events-none pb-1 pr-1 text-[11px] leading-snug text-stone-600">
-              收到一封你的来信，请查收～
-            </p>
-          ) : null}
         </div>
       </div>
 
@@ -1626,7 +1508,7 @@ export default function ChatPage() {
                 onOtherTextChange={(v) =>
                   setDraftCurrentState((d) => ({ ...d, emotionalOther: v }))
                 }
-                otherPlaceholder="比如：我有点怕被发现/我不知道怎么办……"
+                otherPlaceholder="可以写下你现在更贴近的感受"
               />
               <MultiSelectOptionGroupWithOther
                 name="physical"
@@ -1650,7 +1532,7 @@ export default function ChatPage() {
                 onOtherTextChange={(v) =>
                   setDraftCurrentState((d) => ({ ...d, physicalOther: v }))
                 }
-                otherPlaceholder="比如：我胃/睡眠/身体紧绷……"
+                otherPlaceholder="可以写下你现在的身体感受"
               />
               <MultiSelectOptionGroupWithOther
                 name="spatial"
@@ -1664,7 +1546,7 @@ export default function ChatPage() {
                     return {
                       ...d,
                       spatial: next,
-                      spatialOther: v === "其他" && has ? "" : d.spatialOther,
+                      spatialOther: v === "其他地方" && has ? "" : d.spatialOther,
                     };
                   });
                 }}
@@ -1674,7 +1556,8 @@ export default function ChatPage() {
                 onOtherTextChange={(v) =>
                   setDraftCurrentState((d) => ({ ...d, spatialOther: v }))
                 }
-                otherPlaceholder="比如：我在公司/在宿舍/在路上……"
+                otherPlaceholder="可以写下你现在所在的地方"
+                otherOptionLabel="其他地方"
               />
 
               <button
@@ -1707,7 +1590,9 @@ export default function ChatPage() {
               className="max-h-[min(92dvh,40rem)] border-0 sm:max-h-[88dvh]"
               onRequestClose={() => setDailyRecoveryOpen(false)}
               onProgressChanged={() => {
-                void loadProgress();
+                window.setTimeout(() => {
+                  void loadProgress();
+                }, 10000);
               }}
             />
           </div>
@@ -1799,10 +1684,9 @@ export default function ChatPage() {
         <DiaryModal
           onClose={() => setDiaryOpen(false)}
           onSaved={() => {
-            void loadProgress();
             window.setTimeout(() => {
               void loadProgress();
-            }, 3000);
+            }, 10000);
           }}
         />
       ) : null}
