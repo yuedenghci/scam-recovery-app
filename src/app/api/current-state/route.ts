@@ -80,22 +80,31 @@ export async function POST(request: Request) {
       },
     });
 
-    const eventResult = await recordProgressEvent({
-      userId,
-      eventType: RECOVERY_EVENT_TYPES.CHECKIN,
-      scoreDelta: 1,
-      sourceId: savedCurrentState.id,
-      dedupeByDay: true,
-    });
+    console.log("Saved current state:", savedCurrentState);
 
-    if (eventResult.created) {
-      await recomputeRecoveryProgressState(userId);
-      await maybeGenerateProgressLetter(userId);
-    }
+    const response = Response.json({ ok: true, message: "Current state saved" });
 
-    console.log("Saved current state:", savedCurrentState)
+    const stateId = savedCurrentState.id;
+    void (async () => {
+      try {
+        const eventResult = await recordProgressEvent({
+          userId,
+          eventType: RECOVERY_EVENT_TYPES.CHECKIN,
+          scoreDelta: 1,
+          sourceId: stateId,
+          dedupeByDay: true,
+        });
 
-    return Response.json({ ok: true, message: "Current state saved" })
+        if (eventResult.created) {
+          await recomputeRecoveryProgressState(userId);
+          await maybeGenerateProgressLetter(userId);
+        }
+      } catch (e) {
+        console.error("current-state background progress failed:", e);
+      }
+    })();
+
+    return response;
   } catch (error) {
     console.error("Failed to process current state (POST):", error)
     return Response.json(

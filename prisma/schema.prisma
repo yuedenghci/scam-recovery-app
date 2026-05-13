@@ -71,6 +71,8 @@ model UserSupportContext {
   expectedRole     String   @default("")
   toneStyle        String   @default("")
   proactiveLevel   String   @default("")
+  /// passive | moderate | active — 结构化主动偏好，与 proactiveLevel 自然语言同步
+  proactivePreference String?
   helpGoals        String   @default("")
   /// { "scamSituation": true, ... } 标记用户曾手动编辑的模块，服务端合并时跳过覆盖
   manualModuleFlags Json?
@@ -101,12 +103,16 @@ model Message {
   userId           String
   role             String
   content          String
+  /// normal | onboarding_greeting | proactive_opening | feedback_revision
+  mode             String?
   /// LLM 为日常恢复提取的单条可执行小步建议；仅对部分 assistant 回复有值
   suggestedAction String?
   createdAt        DateTime         @default(now())
   feedbackRecords  FeedbackRecord[]
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, mode])
 }
 
 model CurrentState {
@@ -129,6 +135,7 @@ model FeedbackRecord {
   selectedReason       String?
   otherText            String?
   assistantReplyText   String
+  revisedAssistantReplyText String?
   currentStateSnapshot String?
   llmNote              String?
   createdAt            DateTime @default(now())
@@ -159,6 +166,8 @@ model DailyRecovery {
   continuationPromptDismissed Boolean @default(false)
   /// 软删除标记，避免真的丢失记录
   isDeleted       Boolean  @default(false)
+  /// 上海时区语义下，任务不再展示的时点：存「最后一天」次日 00:00（与 getShanghaiEndOfDay 一致）；null 表示未因当日操作而设限
+  expiresAt       DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

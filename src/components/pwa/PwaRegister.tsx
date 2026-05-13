@@ -11,9 +11,14 @@ export function PwaRegister() {
     if (!("serviceWorker" in navigator)) return;
 
     const onLoad = () => {
-      void navigator.serviceWorker.register("/sw.js").catch(() => {
-        /* 本地 http 或未配置 HTTPS 时会失败，可忽略 */
-      });
+      void navigator.serviceWorker
+        .register("/sw.js")
+        .then((reg) => {
+          void reg.update();
+        })
+        .catch(() => {
+          /* 本地 http 或未配置 HTTPS 时会失败，可忽略 */
+        });
     };
 
     if (document.readyState === "complete") onLoad();

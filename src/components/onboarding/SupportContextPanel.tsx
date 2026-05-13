@@ -6,6 +6,9 @@ import { type RightPanelKey, RIGHT_PANEL_MODULES } from "@/lib/onboardingFlow";
 
 type ModuleItem = (typeof RIGHT_PANEL_MODULES)[number];
 
+const LOCKED_PLACEHOLDER = "还没有聊到这一部分";
+const UNLOCKED_EMPTY_PLACEHOLDER = "你可以稍后补充";
+
 type Props = {
   groupedUser: ModuleItem[];
   groupedAi: ModuleItem[];
@@ -14,6 +17,8 @@ type Props = {
   setManualEditedModules: Dispatch<
     SetStateAction<Partial<Record<RightPanelKey, boolean>>>
   >;
+  /** Modules the user may edit after this onboarding part was passed (answered or skipped). */
+  aiFilledModules: Partial<Record<RightPanelKey, boolean>>;
   highlightModule: RightPanelKey | null;
   moduleRefs: MutableRefObject<Record<RightPanelKey, HTMLDivElement | null>>;
   isOnboardingDone: boolean;
@@ -29,6 +34,7 @@ export function SupportContextPanel({
   rightPanelContent,
   setRightPanelContent,
   setManualEditedModules,
+  aiFilledModules,
   highlightModule,
   moduleRefs,
   isOnboardingDone,
@@ -43,7 +49,7 @@ export function SupportContextPanel({
         整理出的支持设定
       </h2>
       <p className="mt-1.5 text-xs leading-relaxed text-stone-700/60">
-        右栏可直接手动编辑。你改过的内容优先，之后不会被自动覆盖。
+      交流过的部分你也可直接手动编辑，并且你改过的内容优先。
       </p>
 
       <div className="mt-4 space-y-4">
@@ -55,9 +61,9 @@ export function SupportContextPanel({
               ref={(el) => {
                 if (moduleRefs.current) moduleRefs.current[module.key] = el;
               }}
-              className={`rounded-2xl border p-3 shadow-sm transition-[box-shadow,background] duration-500 ${
+              className={`rounded-2xl border p-3 shadow-sm transition-[box-shadow,background-color,border-color] duration-500 scroll-mt-8 scroll-mb-[max(5.5rem,calc(3.5rem+env(safe-area-inset-bottom)))] ${
                 highlightModule === module.key
-                  ? "border-orange-200/80 bg-orange-50/60 shadow-orange-100/70"
+                  ? "border-amber-300/80 bg-amber-50/70 shadow-md shadow-amber-100/50 ring-2 ring-amber-200/55"
                   : "border-stone-200/70 bg-white/82"
               }`}
             >
@@ -66,6 +72,7 @@ export function SupportContextPanel({
               </p>
               <textarea
                 value={rightPanelContent[module.key]}
+                disabled={!aiFilledModules[module.key]}
                 onChange={(e) => {
                   setManualEditedModules((prev) => ({
                     ...prev,
@@ -77,8 +84,16 @@ export function SupportContextPanel({
                   }));
                 }}
                 rows={3}
-                placeholder="可以留空，之后慢慢补也无妨"
-                className="w-full resize-y rounded-xl border border-stone-200/75 bg-white/92 px-2.5 py-2 text-sm leading-relaxed text-stone-900/90 outline-none ring-orange-200/45 placeholder:text-stone-500/55 focus:ring-2"
+                placeholder={
+                  aiFilledModules[module.key]
+                    ? UNLOCKED_EMPTY_PLACEHOLDER
+                    : LOCKED_PLACEHOLDER
+                }
+                className={`w-full resize-y rounded-xl border px-2.5 py-2 text-base leading-relaxed outline-none lg:text-sm ${
+                  aiFilledModules[module.key]
+                    ? "border-stone-200/75 bg-white/92 text-stone-900/90 ring-orange-200/45 placeholder:text-stone-500/55 focus:ring-2"
+                    : "cursor-not-allowed border-stone-200/50 bg-stone-100/80 text-stone-500/70 placeholder:text-stone-400/80"
+                }`}
               />
             </div>
           ))}
@@ -92,9 +107,9 @@ export function SupportContextPanel({
               ref={(el) => {
                 if (moduleRefs.current) moduleRefs.current[module.key] = el;
               }}
-              className={`rounded-2xl border p-3 shadow-sm transition-[box-shadow,background] duration-500 ${
+              className={`rounded-2xl border p-3 shadow-sm transition-[box-shadow,background-color,border-color] duration-500 scroll-mt-8 scroll-mb-[max(5.5rem,calc(3.5rem+env(safe-area-inset-bottom)))] ${
                 highlightModule === module.key
-                  ? "border-orange-200/80 bg-orange-50/60 shadow-orange-100/70"
+                  ? "border-amber-300/80 bg-amber-50/70 shadow-md shadow-amber-100/50 ring-2 ring-amber-200/55"
                   : "border-stone-200/70 bg-white/82"
               }`}
             >
@@ -103,6 +118,7 @@ export function SupportContextPanel({
               </p>
               <textarea
                 value={rightPanelContent[module.key]}
+                disabled={!aiFilledModules[module.key]}
                 onChange={(e) => {
                   setManualEditedModules((prev) => ({
                     ...prev,
@@ -114,8 +130,16 @@ export function SupportContextPanel({
                   }));
                 }}
                 rows={3}
-                placeholder="可以留空，之后慢慢补也无妨"
-                className="w-full resize-y rounded-xl border border-stone-200/75 bg-white/92 px-2.5 py-2 text-sm leading-relaxed text-stone-900/90 outline-none ring-orange-200/45 placeholder:text-stone-500/55 focus:ring-2"
+                placeholder={
+                  aiFilledModules[module.key]
+                    ? UNLOCKED_EMPTY_PLACEHOLDER
+                    : LOCKED_PLACEHOLDER
+                }
+                className={`w-full resize-y rounded-xl border px-2.5 py-2 text-base leading-relaxed outline-none lg:text-sm ${
+                  aiFilledModules[module.key]
+                    ? "border-stone-200/75 bg-white/92 text-stone-900/90 ring-orange-200/45 placeholder:text-stone-500/55 focus:ring-2"
+                    : "cursor-not-allowed border-stone-200/50 bg-stone-100/80 text-stone-500/70 placeholder:text-stone-400/80"
+                }`}
               />
             </div>
           ))}

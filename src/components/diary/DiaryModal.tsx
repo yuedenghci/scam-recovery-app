@@ -90,7 +90,7 @@ export function DiaryModal({
               readOnly={alreadyRecordedToday}
               rows={10}
               placeholder="今天想记下什么？"
-              className="w-full resize-none rounded-xl border border-stone-200/80 bg-white px-3 py-2.5 text-[15px] text-stone-800 placeholder:text-stone-400 outline-none read-only:bg-stone-50 read-only:text-stone-700 focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.1)]"
+              className="w-full resize-none rounded-xl border border-stone-200/80 bg-white px-3 py-2.5 text-base text-stone-800 placeholder:text-stone-400 outline-none read-only:bg-stone-50 read-only:text-stone-700 focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.1)] sm:text-[15px]"
             />
             <button
               type="button"

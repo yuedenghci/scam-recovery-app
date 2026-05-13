@@ -6,10 +6,10 @@ import { callProgressLetterLLM } from "@/lib/callProgressLetterLLM";
 
 type DbLike = PrismaClient | Prisma.TransactionClient;
 
-//const LETTER_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-const LETTER_INTERVAL_MS = 1 * 24 * 60 * 60 * 1000;
-//const LETTER_LOOKBACK_DAYS = 7;
+const LETTER_INTERVAL_MS = 2 * 60 * 1000;
+//const LETTER_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
 const LETTER_LOOKBACK_DAYS = 1;
+//const LETTER_LOOKBACK_DAYS = 3;
 
 
 /** Earliest recovery progress trace (any recovery-progress event). */

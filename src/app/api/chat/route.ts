@@ -1,8 +1,5 @@
 import { buildGenerationContext } from "@/lib/buildGenerationContext";
-import {
-  createDoubaoStream,
-  normalizeDoubaoStreamedReply,
-} from "@/lib/callDoubao";
+import { createDoubaoStream } from "@/lib/callDoubao";
 import { detectExplicitFeedback } from "@/lib/extractExplicitFeedback";
 import { extractActionableRecoveryStep } from "@/lib/extractActionableRecoveryStep";
 import { getCurrentUserId } from "@/lib/auth";
@@ -97,7 +94,7 @@ export async function POST(request: Request) {
           llmNote: { not: null },
         },
         orderBy: { createdAt: "desc" },
-        take: 10,
+        take: 5,
       }),
       prisma.feedbackRecord.findMany({
         where: {
@@ -106,7 +103,7 @@ export async function POST(request: Request) {
           llmNote: { not: null },
         },
         orderBy: { createdAt: "desc" },
-        take: 10,
+        take: 5,
       }),
     ]);
 
@@ -169,11 +166,40 @@ export async function POST(request: Request) {
 
     const stream = new ReadableStream({
       async start(controller) {
-        const enqueueSse = (event: string, data: unknown) => {
-          controller.enqueue(encodeSse(event, data));
+        let streamClosed = false;
+
+        const safeEnqueue = (chunk: Uint8Array): boolean => {
+          if (streamClosed) return false;
+          try {
+            controller.enqueue(chunk);
+            return true;
+          } catch {
+            streamClosed = true;
+            return false;
+          }
         };
 
-        let reply = "";
+        const safeClose = () => {
+          if (streamClosed) return;
+          streamClosed = true;
+          try {
+            controller.close();
+          } catch {
+            // ignore double-close / already-closed
+          }
+        };
+
+        const enqueueSse = (event: string, data: unknown): boolean => {
+          return safeEnqueue(encodeSse(event, data));
+        };
+
+        let clientDisconnected = false;
+        const onClientAbort = () => {
+          clientDisconnected = true;
+          safeClose();
+        };
+        request.signal.addEventListener("abort", onClientAbort, { once: true });
+
         let savedAssistantMessage: { id: string };
 
         try {
@@ -183,22 +209,36 @@ export async function POST(request: Request) {
           let accumulatedRaw = "";
 
           for await (const chunk of completionStream) {
+            if (request.signal.aborted || clientDisconnected || streamClosed) {
+              break;
+            }
             const delta = chunk.choices?.[0]?.delta?.content;
             if (typeof delta === "string" && delta.length > 0) {
               accumulatedRaw += delta;
-              enqueueSse("delta", { text: delta });
+              if (!enqueueSse("delta", { text: delta })) {
+                break;
+              }
             }
           }
           logChatTiming("LLM stream finished");
 
-          const outcome = normalizeDoubaoStreamedReply(accumulatedRaw);
-          reply = outcome.reply;
+          if (clientDisconnected || streamClosed) {
+            return;
+          }
+
+          // Persist exactly what was streamed (same concatenation as frontend deltas).
+          const assistantContent = accumulatedRaw;
+          if (!assistantContent.trim()) {
+            enqueueSse("error", { message: "发送失败，请重试" });
+            safeClose();
+            return;
+          }
 
           savedAssistantMessage = await prisma.message.create({
             data: {
               userId,
               role: "assistant",
-              content: reply,
+              content: assistantContent,
             },
           });
           logChatTiming("assistant message saved");
@@ -206,7 +246,7 @@ export async function POST(request: Request) {
           void (async () => {
             try {
               const extracted = await extractActionableRecoveryStep({
-                replyText: reply,
+                replyText: assistantContent,
               });
               const suggestedAction =
                 extracted.hasActionableRecoveryStep &&
@@ -215,7 +255,7 @@ export async function POST(request: Request) {
                   : null;
 
               const suggestedActionSafe =
-                suggestedAction && reply.includes(suggestedAction)
+                suggestedAction && assistantContent.includes(suggestedAction)
                   ? suggestedAction
                   : null;
 
@@ -268,6 +308,7 @@ export async function POST(request: Request) {
                   selectedReason: "explicit_textual_feedback",
                   otherText: trimmed,
                   assistantReplyText: latestAssistantMessage.content,
+                  revisedAssistantReplyText: assistantContent,
                   messageId: latestAssistantMessage.id,
                   currentStateSnapshot,
                   llmNote: explicitLlmNote,
@@ -278,20 +319,17 @@ export async function POST(request: Request) {
             }
           })();
 
-          enqueueSse("done", {
+          if (!enqueueSse("done", {
             messageId: savedAssistantMessage.id,
             suggestedAction: null,
-            reply,
-          });
-          controller.close();
+          })) {
+            return;
+          }
+          safeClose();
         } catch (e) {
           console.error("chat SSE stream processing failed:", e);
-          try {
-            enqueueSse("error", { message: "发送失败，请重试" });
-          } catch {
-            // ignore enqueue after close
-          }
-          controller.close();
+          enqueueSse("error", { message: "发送失败，请重试" });
+          safeClose();
         }
       },
     });

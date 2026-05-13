@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/auth";
+import { inferProactivePreferenceFromLevelText } from "@/lib/inferProactivePreference";
 import { type Prisma, Prisma as PrismaNamespace } from "@prisma/client";
 
 const emptyModules = {
@@ -26,6 +27,19 @@ function asManualFlags(v: unknown): ManualFlags {
     if (o[k] === true) (out as Record<string, boolean>)[k] = true;
   }
   return Object.keys(out).length ? out : null;
+}
+
+const PROACTIVE_PREFS = new Set(["passive", "moderate", "active"]);
+
+/** undefined = omit field; null = clear */
+function normalizeProactivePreference(
+  v: unknown,
+): "passive" | "moderate" | "active" | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = typeof v === "string" ? v.trim() : String(v).trim();
+  if (!s) return null;
+  return PROACTIVE_PREFS.has(s) ? (s as "passive" | "moderate" | "active") : undefined;
 }
 
 export async function GET() {
@@ -68,6 +82,7 @@ export async function GET() {
             expectedRole: ctx.expectedRole,
             toneStyle: ctx.toneStyle,
             proactiveLevel: ctx.proactiveLevel,
+            proactivePreference: ctx.proactivePreference ?? null,
             helpGoals: ctx.helpGoals,
             manualModuleFlags: (ctx.manualModuleFlags as ManualFlags) ?? null,
           }
@@ -104,6 +119,7 @@ export async function PUT(request: Request) {
         expectedRole?: string;
         toneStyle?: string;
         proactiveLevel?: string;
+        proactivePreference?: string | null;
         helpGoals?: string;
         manualModuleFlags?: unknown;
       };
@@ -152,7 +168,16 @@ export async function PUT(request: Request) {
 
     if (body.supportContext) {
       const s = body.supportContext;
+      const existing = await prisma.userSupportContext.findUnique({
+        where: { userId },
+      });
       const flags = asManualFlags(s.manualModuleFlags);
+      const prefNorm = normalizeProactivePreference(s.proactivePreference);
+      const levelIncoming = s.proactiveLevel !== undefined;
+      const newLevel = levelIncoming ? (s.proactiveLevel ?? "") : null;
+      const levelChanged =
+        levelIncoming && newLevel !== (existing?.proactiveLevel ?? "");
+
       await prisma.userSupportContext.upsert({
         where: { userId },
         create: {
@@ -164,6 +189,8 @@ export async function PUT(request: Request) {
           expectedRole: s.expectedRole ?? "",
           toneStyle: s.toneStyle ?? "",
           proactiveLevel: s.proactiveLevel ?? "",
+          proactivePreference:
+            prefNorm === undefined ? null : prefNorm,
           helpGoals: s.helpGoals ?? "",
           manualModuleFlags: flags === null ? undefined : (flags as object),
         },
@@ -183,6 +210,7 @@ export async function PUT(request: Request) {
           ...(s.proactiveLevel !== undefined
             ? { proactiveLevel: s.proactiveLevel }
             : {}),
+          ...(prefNorm !== undefined ? { proactivePreference: prefNorm } : {}),
           ...(s.helpGoals !== undefined ? { helpGoals: s.helpGoals } : {}),
           ...(s.manualModuleFlags !== undefined
             ? {
@@ -194,6 +222,20 @@ export async function PUT(request: Request) {
             : {}),
         },
       });
+
+      if (levelChanged && prefNorm === undefined) {
+        try {
+          const inferred = await inferProactivePreferenceFromLevelText(
+            newLevel ?? "",
+          );
+          await prisma.userSupportContext.update({
+            where: { userId },
+            data: { proactivePreference: inferred },
+          });
+        } catch (e) {
+          console.error("infer proactivePreference failed:", e);
+        }
+      }
     }
 
     return Response.json({ ok: true });

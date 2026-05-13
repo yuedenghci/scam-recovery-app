@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/auth";
-import { getShanghaiEndOfDay, getShanghaiStartOfDay } from "@/lib/dayKey";
+import {
+  getShanghaiEndOfDay,
+  getShanghaiEndOfDayAfterCalendarDays,
+  getShanghaiStartOfDay,
+} from "@/lib/dayKey";
 import { generateDailyRecoveryCandidates } from "@/lib/generateDailyRecoveryCandidates";
 import {
   maybeGenerateProgressLetter,
@@ -61,6 +65,29 @@ function shanghaiTodayRange(now = new Date()) {
   };
 }
 
+function activeDailyRecoveryWhere(userId: string, now = new Date()) {
+  const startOfToday = getShanghaiStartOfDay(now);
+  return {
+    userId,
+    isDeleted: false,
+    NOT: {
+      AND: [
+        { expiresAt: { not: null } },
+        { expiresAt: { lte: startOfToday } },
+      ],
+    },
+  };
+}
+
+function dailyRecoveryVisible(
+  row: { isDeleted: boolean; expiresAt?: Date | null },
+  startOfToday: Date,
+) {
+  if (row.isDeleted) return false;
+  const ex = row.expiresAt ?? null;
+  return ex == null || ex > startOfToday;
+}
+
 export async function GET() {
   try {
     const userId = await getCurrentUserId();
@@ -75,10 +102,7 @@ export async function GET() {
 
     const [tasks, todayLogs, logCountGroups] = await Promise.all([
       prisma.dailyRecovery.findMany({
-        where: {
-          userId,
-          isDeleted: false,
-        },
+        where: activeDailyRecoveryWhere(userId),
         orderBy: { createdAt: "asc" },
       }),
       prisma.dailyRecoveryStatusLog.findMany({
@@ -254,7 +278,7 @@ export async function POST(request: Request) {
       }
 
       const activeCount = await prisma.dailyRecovery.count({
-        where: { userId, isDeleted: false },
+        where: activeDailyRecoveryWhere(userId),
       });
 
       let record;
@@ -267,6 +291,7 @@ export async function POST(request: Request) {
             difficultyNote,
             currentTaskText: taskText,
             isDeleted: false,
+            expiresAt: null,
           },
         });
       } else {
@@ -323,7 +348,7 @@ export async function POST(request: Request) {
       });
 
       const activeCount = await prisma.dailyRecovery.count({
-        where: { userId, isDeleted: false },
+        where: activeDailyRecoveryWhere(userId),
       });
 
       if (activeCount >= MAX_ACTIVE_TASKS) {
@@ -379,7 +404,7 @@ export async function POST(request: Request) {
       }
 
       const activeCount = await prisma.dailyRecovery.count({
-        where: { userId, isDeleted: false },
+        where: activeDailyRecoveryWhere(userId),
       });
       if (activeCount >= MAX_ACTIVE_TASKS) {
         return Response.json(
@@ -434,7 +459,8 @@ export async function POST(request: Request) {
       const existing = await prisma.dailyRecovery.findUnique({
         where: { id: taskId },
       });
-      if (!existing || existing.isDeleted) {
+      const startOfToday = getShanghaiStartOfDay();
+      if (!existing || !dailyRecoveryVisible(existing, startOfToday)) {
         return Response.json({ ok: false, error: "这个小任务已经不存在了" }, { status: 404 });
       }
 
@@ -497,7 +523,8 @@ export async function POST(request: Request) {
       const existing = await prisma.dailyRecovery.findUnique({
         where: { id: taskId },
       });
-      if (!existing || existing.isDeleted) {
+      const startOfToday = getShanghaiStartOfDay();
+      if (!existing || !dailyRecoveryVisible(existing, startOfToday)) {
         return Response.json({ ok: false, error: "这个小任务已经不存在了" }, { status: 404 });
       }
 
@@ -507,6 +534,7 @@ export async function POST(request: Request) {
           continuationDays: daysRaw,
           continuationReminderEnabled: continuationRem,
           continuationReminderTime: continuationReminderTime,
+          expiresAt: getShanghaiEndOfDayAfterCalendarDays(new Date(), daysRaw),
         },
       });
 
@@ -535,13 +563,17 @@ export async function POST(request: Request) {
       const existing = await prisma.dailyRecovery.findUnique({
         where: { id: taskId },
       });
-      if (!existing || existing.isDeleted) {
+      const startOfToday = getShanghaiStartOfDay();
+      if (!existing || !dailyRecoveryVisible(existing, startOfToday)) {
         return Response.json({ ok: false, error: "这个小任务已经不存在了" }, { status: 404 });
       }
 
       await prisma.dailyRecovery.update({
         where: { id: taskId },
-        data: { continuationPromptDismissed: true },
+        data: {
+          continuationPromptDismissed: true,
+          expiresAt: getShanghaiEndOfDay(),
+        },
       });
 
       await prisma.dailyRecoveryEventLog.create({
@@ -566,7 +598,8 @@ export async function POST(request: Request) {
       const existing = await prisma.dailyRecovery.findUnique({
         where: { id: taskId },
       });
-      if (!existing || existing.isDeleted) {
+      const startOfToday = getShanghaiStartOfDay();
+      if (!existing || !dailyRecoveryVisible(existing, startOfToday)) {
         return Response.json({ ok: false, error: "这个小任务已经不存在了" }, { status: 404 });
       }
 
@@ -607,7 +640,12 @@ export async function POST(request: Request) {
       const existing = await prisma.dailyRecovery.findUnique({
         where: { id: taskId },
       });
-      if (!existing || existing.isDeleted || !existing.currentTaskText) {
+      const startOfToday = getShanghaiStartOfDay();
+      if (
+        !existing ||
+        !dailyRecoveryVisible(existing, startOfToday) ||
+        !existing.currentTaskText
+      ) {
         return Response.json(
           { ok: false, error: "当前没有进行中的小步任务" },
           { status: 400 },
@@ -652,6 +690,15 @@ export async function POST(request: Request) {
           dailyRecoveryId: taskId,
           eventType: "update_status",
           detail: { status },
+        },
+      });
+
+      const keepExistingExpiry =
+        existing.expiresAt != null && existing.expiresAt > todayEnd;
+      await prisma.dailyRecovery.update({
+        where: { id: taskId },
+        data: {
+          expiresAt: keepExistingExpiry ? existing.expiresAt : todayEnd,
         },
       });
 

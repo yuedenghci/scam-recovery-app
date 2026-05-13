@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 
+import { AssistantTypingDots } from "@/components/chat/AssistantTypingDots";
 import { SupportContextPanel } from "@/components/onboarding/SupportContextPanel";
 import {
   ENDING_TEXT,
@@ -61,12 +62,23 @@ type FlyingStar = {
   active: boolean;
 };
 
-const STAR_PAUSE_MS = 1200;
-const STAR_FLY_MS = 4200;
-const STAR_HIGHLIGHT_MS = 4600;
-const STAR_TOAST_MS = 6600;
+const STAR_PAUSE_MS = 700;
+const STAR_FLY_MS = 2600;
+const STAR_TOAST_MS = 5200;
 const NEXT_QUESTION_DELAY_MS = 2000;
 const OPENING_TRANSITION_MS = 220;
+const POST_STAR_SCROLL_HIGHLIGHT_MS = 1800;
+/** Mobile: wait for bottom sheet open + scroll before measuring star end point */
+const MOBILE_SHEET_OPEN_MS = 380;
+const MOBILE_SCROLL_THEN_STAR_MS = 480;
+
+/** Last step only: collapsible reference chips in the input footer (UI only). */
+const LAST_ONBOARDING_QUESTION_INDEX = QUESTIONS.length - 1;
+const LAST_QUESTION_HINT_INITIAL_VISIBLE_CHIPS = 3;
+
+function skipTypingDurationMs() {
+  return 600 + Math.floor(Math.random() * 401);
+}
 
 const SKIP_CONFIRM_BODY =
   "这部分先跳过没关系，不过这可能会影响后面我对你的理解和陪伴体验。";
@@ -92,21 +104,27 @@ function toPointLines(text: string): string[] {
 }
 
 function clientSummaryFallback(
-  _question: QuestionNode,
+  question: QuestionNode,
   userAnswer: string,
-): { chatSummary: string; bullets: string[] } {
+): { chatSummary: string; bullets: string[]; proactivePreference?: "passive" | "moderate" | "active" } {
   const compact = userAnswer.replace(/\s+/g, " ").trim();
+  const proactiveExtra =
+    question.rightPanelKey === "proactiveLevel"
+      ? ({ proactivePreference: "moderate" as const } as const)
+      : {};
   if (!compact) {
     return {
       chatSummary:
         "我先把这一题记成：描述还比较少，你之后有想法我们再慢慢补。",
       bullets: ["目前细节较少，可后续补充"],
+      ...proactiveExtra,
     };
   }
   const short = compact.length > 90 ? `${compact.slice(0, 88).trim()}…` : compact;
   return {
     chatSummary: `听起来你刚刚在说的重点我接住了。\n我先记一下：${short}\n之后你想再微调，我们可以继续改。`,
     bullets: [short],
+    ...proactiveExtra,
   };
 }
 
@@ -129,15 +147,41 @@ function buildCombinedAnswer(answers: string[]): string {
     .join("\n");
 }
 
+/** Assistant-side bubbles (summary stream, typing, question transition) share one shell */
+const ONBOARDING_ASSISTANT_BUBBLE =
+  "max-w-[92%] rounded-2xl rounded-tl-md border border-stone-200/80 bg-orange-50/35 px-3.5 py-2.5 text-[15px] leading-relaxed text-stone-900/90 shadow-sm sm:max-w-[85%]";
+
 function AiThinkingDots() {
   return (
-    <div className="flex max-w-[92%] items-center gap-1 rounded-2xl border border-stone-200/80 bg-orange-50/45 px-3.5 py-2.5 sm:max-w-[85%]">
-      <span className="inline-block h-1.5 w-1.5 animate-bounce rounded-full bg-orange-300/70 [animation-delay:0ms]" />
-      <span className="inline-block h-1.5 w-1.5 animate-bounce rounded-full bg-orange-300/50 [animation-delay:150ms]" />
-      <span className="inline-block h-1.5 w-1.5 animate-bounce rounded-full bg-orange-300/35 [animation-delay:300ms]" />
-      <span className="ml-1 text-xs text-stone-600/70">正在整理</span>
+    <div className={`flex items-center ${ONBOARDING_ASSISTANT_BUBBLE}`}>
+      <AssistantTypingDots variant="onboarding" className="py-0.5" />
     </div>
   );
+}
+
+/** Right-panel field editable once this question step was completed (answered or skipped). */
+function deriveAiFilledFromAudit(
+  audit: StepAuditItem[],
+): Partial<Record<RightPanelKey, boolean>> {
+  const out: Partial<Record<RightPanelKey, boolean>> = {};
+  for (const row of audit) {
+    if (row.confirmed) {
+      out[row.moduleKey] = true;
+    }
+  }
+  return out;
+}
+
+/** Returning users: unlock fields that already have persisted content. */
+function mergeAiFilledFromPersisted(
+  base: Partial<Record<RightPanelKey, boolean>>,
+  content: Record<RightPanelKey, string>,
+): Partial<Record<RightPanelKey, boolean>> {
+  const out = { ...base };
+  (Object.keys(content) as RightPanelKey[]).forEach((k) => {
+    if (content[k]?.trim()) out[k] = true;
+  });
+  return out;
 }
 
 export default function OnboardingPage() {
@@ -177,12 +221,23 @@ export default function OnboardingPage() {
   const [manualEditedModules, setManualEditedModules] = useState<
     Partial<Record<RightPanelKey, boolean>>
   >({});
+  /** passive | moderate | active，与 proactiveLevel 文案同步 */
+  const [proactivePreference, setProactivePreference] = useState<string | null>(
+    null,
+  );
+  /** Per right-panel key: user has passed that onboarding step (confirmed answer or skip). */
+  const [aiFilledModules, setAiFilledModules] = useState<
+    Partial<Record<RightPanelKey, boolean>>
+  >({});
   const [highlightModule, setHighlightModule] = useState<RightPanelKey | null>(
     null,
   );
   const [flyNotice, setFlyNotice] = useState("");
   const [flyingStar, setFlyingStar] = useState<FlyingStar | null>(null);
   const [isOnboardingDone, setIsOnboardingDone] = useState(false);
+  /** Last-question hint chips: expanded vs collapsed (display only). */
+  const [lastQuestionHintExpanded, setLastQuestionHintExpanded] =
+    useState(false);
   const [saveStatus, setSaveStatus] = useState<
     "idle" | "saving" | "saved" | "error"
   >("idle");
@@ -210,6 +265,10 @@ export default function OnboardingPage() {
   });
   const sheetEntryRef = useRef<HTMLButtonElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onboardingScrollRef = useRef<HTMLDivElement | null>(null);
+  const onboardingScrollRaf = useRef<number | null>(null);
+  const onboardingTailRef = useRef<HTMLDivElement | null>(null);
+  const skipTypingTimerRef = useRef<number | null>(null);
 
   const firstQuestion = QUESTIONS[0];
   const currentQuestion = QUESTIONS[currentQuestionIndex] ?? null;
@@ -255,6 +314,9 @@ export default function OnboardingPage() {
           },
           supportContext: {
             ...(override?.right ?? rightPanelContent),
+            ...(proactivePreference !== null
+              ? { proactivePreference }
+              : {}),
             manualModuleFlags: override?.manual ?? manualEditedModules,
           },
         }),
@@ -268,6 +330,7 @@ export default function OnboardingPage() {
       isOnboardingDone,
       rightPanelContent,
       manualEditedModules,
+      proactivePreference,
       stepAudit,
     ],
   );
@@ -289,14 +352,25 @@ export default function OnboardingPage() {
           supportContext:
             | ({
                 manualModuleFlags?: unknown;
+                proactivePreference?: string | null;
               } & Record<RightPanelKey, string>)
             | null;
         };
         if (!j.ok) throw new Error("bad");
 
+        let restoredRight: Record<RightPanelKey, string> = {
+          scamSituation: "",
+          scamImpact: "",
+          personality: "",
+          likedActivities: "",
+          expectedRole: "",
+          toneStyle: "",
+          proactiveLevel: "",
+          helpGoals: "",
+        };
         if (j.supportContext) {
           const m = j.supportContext;
-          setRightPanelContent({
+          restoredRight = {
             scamSituation: m.scamSituation ?? "",
             scamImpact: m.scamImpact ?? "",
             personality: m.personality ?? "",
@@ -305,7 +379,14 @@ export default function OnboardingPage() {
             toneStyle: m.toneStyle ?? "",
             proactiveLevel: m.proactiveLevel ?? "",
             helpGoals: m.helpGoals ?? "",
-          });
+          };
+          setRightPanelContent(restoredRight);
+          const pp = j.supportContext.proactivePreference;
+          setProactivePreference(
+            typeof pp === "string" && ["passive", "moderate", "active"].includes(pp)
+              ? pp
+              : null,
+          );
           if (
             m.manualModuleFlags &&
             typeof m.manualModuleFlags === "object" &&
@@ -315,11 +396,19 @@ export default function OnboardingPage() {
               m.manualModuleFlags as Partial<Record<RightPanelKey, boolean>>,
             );
           }
+        } else {
+          setProactivePreference(null);
         }
 
         if (j.draft?.stepAudit && Array.isArray(j.draft.stepAudit)) {
           const auditRows = j.draft.stepAudit as StepAuditItem[];
           setStepAudit(auditRows);
+          setAiFilledModules(
+            mergeAiFilledFromPersisted(
+              deriveAiFilledFromAudit(auditRows),
+              restoredRight,
+            ),
+          );
           setQuestionProgress((prev) => {
             const next = { ...prev };
             auditRows.forEach((row) => {
@@ -351,11 +440,17 @@ export default function OnboardingPage() {
           setOpeningAcknowledged(!!j.draft.openingAcknowledged);
           setIsOnboardingDone(!!j.draft.isCompleted);
           setShowOpeningButton(!j.draft.openingAcknowledged);
+          if (!j.draft.stepAudit || !Array.isArray(j.draft.stepAudit)) {
+            setAiFilledModules(mergeAiFilledFromPersisted({}, restoredRight));
+          }
         } else {
           setChatMessages([createMessage("ai", OPENING_TEXT, { kind: "opening" })]);
           setCurrentQuestionIndex(0);
           setOpeningAcknowledged(false);
           setShowOpeningButton(true);
+          setAiFilledModules(
+            mergeAiFilledFromPersisted({}, restoredRight),
+          );
         }
         setLoadStatus("ready");
       } catch (e) {
@@ -369,6 +464,12 @@ export default function OnboardingPage() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (skipTypingTimerRef.current) clearTimeout(skipTypingTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     if (loadStatus !== "ready") return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -377,7 +478,48 @@ export default function OnboardingPage() {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [loadStatus, fullPersist, chatMessages, rightPanelContent, manualEditedModules, stepAudit, currentQuestionIndex, openingAcknowledged, isOnboardingDone]);
+  }, [loadStatus, fullPersist, chatMessages, rightPanelContent, manualEditedModules, proactivePreference, stepAudit, currentQuestionIndex, openingAcknowledged, isOnboardingDone]);
+
+  useEffect(() => {
+    if (onboardingScrollRaf.current != null) {
+      cancelAnimationFrame(onboardingScrollRaf.current);
+    }
+    onboardingScrollRaf.current = requestAnimationFrame(() => {
+      onboardingScrollRaf.current = null;
+      const el = onboardingScrollRef.current;
+      if (el) {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      }
+      onboardingTailRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    });
+    return () => {
+      if (onboardingScrollRaf.current != null) {
+        cancelAnimationFrame(onboardingScrollRaf.current);
+        onboardingScrollRaf.current = null;
+      }
+    };
+  }, [
+    chatMessages,
+    isThinking,
+    awaitingConfirm,
+    summaryDraft,
+    currentQuestion?.hintCards?.length,
+    isQuestionTransitioning,
+    showOpeningButton,
+    currentQuestion,
+    currentQuestionIndex,
+    openingAcknowledged,
+    isOnboardingDone,
+  ]);
+
+  useEffect(() => {
+    if (currentQuestionIndex !== LAST_ONBOARDING_QUESTION_INDEX) {
+      setLastQuestionHintExpanded(false);
+    }
+  }, [currentQuestionIndex]);
 
   function openNextQuestion(nextIndex: number) {
     const nextQ = QUESTIONS[nextIndex];
@@ -414,16 +556,19 @@ export default function OnboardingPage() {
         window.setTimeout(() => {
           setFlyingStar((s) => (s ? { ...s, active: true } : null));
         }, STAR_PAUSE_MS);
-        window.setTimeout(
-          () => setFlyingStar(null),
-          STAR_PAUSE_MS + STAR_FLY_MS,
-        );
-        setHighlightModule(moduleKey);
+        window.setTimeout(() => {
+          setFlyingStar(null);
+          const el = moduleRefs.current[moduleKey];
+          if (el && isLg) {
+            el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          }
+          setHighlightModule(moduleKey);
+          window.setTimeout(
+            () => setHighlightModule(null),
+            POST_STAR_SCROLL_HIGHLIGHT_MS,
+          );
+        }, STAR_PAUSE_MS + STAR_FLY_MS);
         setFlyNotice("先帮你记在这里了，后面随时都能改。");
-        window.setTimeout(
-          () => setHighlightModule(null),
-          STAR_PAUSE_MS + STAR_FLY_MS + STAR_HIGHLIGHT_MS,
-        );
         window.setTimeout(() => setFlyNotice(""), STAR_TOAST_MS);
       };
 
@@ -439,23 +584,29 @@ export default function OnboardingPage() {
       if (!isLg) {
         setSheetOpen(true);
         setEntryPulse(true);
-        window.setTimeout(() => setEntryPulse(false), 1600);
+        window.setTimeout(() => setEntryPulse(false), 1200);
         window.setTimeout(() => {
           const el = moduleRefs.current[moduleKey];
-          const b = sheetEntryRef.current;
-          let endX = window.innerWidth - 48;
-          let endY = 64;
           if (el) {
-            const t = el.getBoundingClientRect();
-            endX = t.left + Math.min(32, t.width * 0.2);
-            endY = t.top + 20;
-          } else if (b) {
-            const t = b.getBoundingClientRect();
-            endX = t.left + t.width / 2;
-            endY = t.top + t.height / 2;
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
           }
-          run(startX, startY, endX, endY);
-        }, 400);
+          window.setTimeout(() => {
+            const target = moduleRefs.current[moduleKey];
+            const b = sheetEntryRef.current;
+            let endX = window.innerWidth - 48;
+            let endY = 64;
+            if (target) {
+              const t = target.getBoundingClientRect();
+              endX = t.left + Math.min(32, t.width * 0.2);
+              endY = t.top + 20;
+            } else if (b) {
+              const t = b.getBoundingClientRect();
+              endX = t.left + t.width / 2;
+              endY = t.top + t.height / 2;
+            }
+            run(startX, startY, endX, endY);
+          }, MOBILE_SCROLL_THEN_STAR_MS);
+        }, MOBILE_SHEET_OPEN_MS);
         return;
       }
 
@@ -491,6 +642,7 @@ export default function OnboardingPage() {
   const finishCurrentQuestion = (draft: SummaryDraft, fromRevisionCap = false) => {
     const progress = questionProgress[draft.questionId];
     const combinedAnswer = buildCombinedAnswer(progress?.userAnswers ?? []);
+    setAiFilledModules((prev) => ({ ...prev, [draft.moduleKey]: true }));
     appendSummaryToRightPanel(draft);
     triggerStar(draft.moduleKey, draft.questionId);
     if (!fromRevisionCap) {
@@ -524,44 +676,20 @@ export default function OnboardingPage() {
     transitionToNextQuestion(next);
   };
 
-  async function runSummarize(
-    q: QuestionNode,
-    userText: string,
-    previousChatSummary: string | undefined,
-  ): Promise<{ chatSummary: string; bullets: string[] }> {
-    const body = {
-      questionId: q.id,
-      userAnswer: userText,
-      previousChatSummary: previousChatSummary || undefined,
-    };
-    const fetchP = fetch("/api/onboarding/summarize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }).then(async (r) => {
-      if (!r.ok) return null;
-      return r.json() as Promise<{
-        ok: boolean;
-        chatSummary?: string;
-        bullets?: string[];
-      }>;
-    });
-    const data = await fetchP;
-    if (data?.ok && data.chatSummary) {
-      return {
-        chatSummary: data.chatSummary,
-        bullets: Array.isArray(data.bullets) ? data.bullets : [data.chatSummary],
-      };
-    }
-    return clientSummaryFallback(q, userText);
-  }
-
   async function submitAnswer(answer: string, isSkip: boolean) {
     if (!currentQuestion) return;
     if (!isSkip && !answer.trim()) return;
     if (isSkip) {
       const u = "这部分我先不说。";
-      setChatMessages((prev) => [...prev, createMessage("user", u)]);
+      const typingMsg = createMessage("ai", "", {
+        kind: "summary",
+        questionId: currentQuestion.id,
+      });
+      setChatMessages((prev) => [
+        ...prev,
+        createMessage("user", u),
+        typingMsg,
+      ]);
       pushAudit({
         questionId: currentQuestion.id,
         moduleKey: currentQuestion.rightPanelKey,
@@ -571,13 +699,24 @@ export default function OnboardingPage() {
         skipped: true,
         confirmed: true,
       });
+      setAiFilledModules((prev) => ({
+        ...prev,
+        [currentQuestion.rightPanelKey]: true,
+      }));
       setDraftInput("");
       setRevisionContextSummary(undefined);
       setSummaryDraft(null);
       setAwaitingConfirm(false);
       setRevisionCount(0);
       const next = currentQuestionIndex + 1;
-      transitionToNextQuestion(next);
+      if (skipTypingTimerRef.current) clearTimeout(skipTypingTimerRef.current);
+      skipTypingTimerRef.current = window.setTimeout(() => {
+        skipTypingTimerRef.current = null;
+        const typingId = typingMsg.id;
+        setChatMessages((prev) => prev.filter((m) => m.id !== typingId));
+        setCurrentQuestionIndex(next);
+        openNextQuestion(next);
+      }, skipTypingDurationMs());
       return;
     }
 
@@ -597,42 +736,180 @@ export default function OnboardingPage() {
     }));
 
     setIsThinking(true);
-    const typingId = `typing-${Date.now()}`;
+    const streamAssistantId = `local-ai-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     setChatMessages((prev) => [
       ...prev,
-      { id: typingId, role: "ai", text: "…", kind: "typing" },
+      {
+        id: streamAssistantId,
+        role: "ai",
+        text: "",
+        kind: "summary",
+        questionId: currentQuestion.id,
+      },
     ]);
 
     const prevForLlm = revisionContextSummary || existingProgress?.summary;
-    const out = await runSummarize(currentQuestion, combinedAnswer, prevForLlm);
     setRevisionContextSummary(undefined);
 
-    setChatMessages((prev) => {
-      const without = prev.filter((m) => m.id !== typingId);
-      return [
-        ...without,
-        createMessage("ai", out.chatSummary, {
-          kind: "summary",
+    const applySummaryOutcome = (out: {
+      chatSummary: string;
+      bullets: string[];
+      proactivePreference?: "passive" | "moderate" | "active";
+    }) => {
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.id === streamAssistantId
+            ? { ...m, text: out.chatSummary }
+            : m,
+        ),
+      );
+      setSummaryDraft({
+        questionId: currentQuestion.id,
+        moduleKey: currentQuestion.rightPanelKey,
+        text: out.chatSummary,
+        points: out.bullets,
+      });
+      if (
+        currentQuestion.rightPanelKey === "proactiveLevel" &&
+        out.proactivePreference
+      ) {
+        setProactivePreference(out.proactivePreference);
+      }
+      setQuestionProgress((prev) => ({
+        ...prev,
+        [currentQuestion.id]: {
+          userAnswers: answers,
+          summary: out.chatSummary,
+          revisionCount: prev[currentQuestion.id]?.revisionCount ?? 0,
+        },
+      }));
+      setAwaitingConfirm(true);
+    };
+
+    try {
+      const res = await fetch("/api/onboarding/summarize/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           questionId: currentQuestion.id,
+          userAnswer: combinedAnswer,
+          previousChatSummary: prevForLlm,
         }),
-      ];
-    });
-    setIsThinking(false);
-    setSummaryDraft({
-      questionId: currentQuestion.id,
-      moduleKey: currentQuestion.rightPanelKey,
-      text: out.chatSummary,
-      points: out.bullets,
-    });
-    setQuestionProgress((prev) => ({
-      ...prev,
-      [currentQuestion.id]: {
-        userAnswers: answers,
-        summary: out.chatSummary,
-        revisionCount: prev[currentQuestion.id]?.revisionCount ?? 0,
-      },
-    }));
-    setAwaitingConfirm(true);
+      });
+
+      const contentType = res.headers.get("content-type") ?? "";
+      if (
+        !res.ok ||
+        !contentType.includes("text/event-stream") ||
+        !res.body
+      ) {
+        const fb = clientSummaryFallback(currentQuestion, combinedAnswer);
+        applySummaryOutcome(fb);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamOk = false;
+      let donePayload: {
+        chatSummary: string;
+        bullets: string[];
+        proactivePreference?: "passive" | "moderate" | "active";
+      } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const rawEvent of events) {
+          const lines = rawEvent.split("\n");
+          const eventLine = lines.find((line) => line.startsWith("event: "));
+          const dataLine = lines.find((line) => line.startsWith("data: "));
+          if (!eventLine || !dataLine) continue;
+          const event = eventLine.replace("event: ", "").trim();
+          let data: unknown;
+          try {
+            data = JSON.parse(dataLine.replace("data: ", ""));
+          } catch {
+            continue;
+          }
+          if (event === "delta") {
+            const delta =
+              typeof data === "object" &&
+              data !== null &&
+              "text" in data &&
+              typeof (data as { text: unknown }).text === "string"
+                ? (data as { text: string }).text
+                : "";
+            if (delta) {
+              setChatMessages((prev) =>
+                prev.map((m) =>
+                  m.id === streamAssistantId
+                    ? { ...m, text: m.text + delta }
+                    : m,
+                ),
+              );
+            }
+          }
+          if (event === "done") {
+            streamOk = true;
+            const d = data as {
+              chatSummary?: unknown;
+              bullets?: unknown;
+              proactivePreference?: unknown;
+            };
+            const chatSummary =
+              typeof d.chatSummary === "string" ? d.chatSummary.trim() : "";
+            const bullets = Array.isArray(d.bullets)
+              ? d.bullets
+                  .map((b) => (typeof b === "string" ? b.trim() : String(b)))
+                  .filter(Boolean)
+              : [];
+            const proactiveRaw = d.proactivePreference;
+            const proactivePreference =
+              typeof proactiveRaw === "string" &&
+              ["passive", "moderate", "active"].includes(proactiveRaw.trim())
+                ? (proactiveRaw.trim() as "passive" | "moderate" | "active")
+                : undefined;
+            if (chatSummary) {
+              donePayload = {
+                chatSummary,
+                bullets: bullets.length ? bullets : [chatSummary],
+                ...(proactivePreference ? { proactivePreference } : {}),
+              };
+            }
+          }
+          if (event === "error") {
+            streamOk = false;
+          }
+        }
+      }
+
+      if (streamOk && donePayload) {
+        applySummaryOutcome(donePayload);
+      } else {
+        const fb = clientSummaryFallback(currentQuestion, combinedAnswer);
+        applySummaryOutcome(fb);
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === streamAssistantId ? { ...m, text: fb.chatSummary } : m,
+          ),
+        );
+      }
+    } catch {
+      const fb = clientSummaryFallback(currentQuestion, combinedAnswer);
+      applySummaryOutcome(fb);
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.id === streamAssistantId ? { ...m, text: fb.chatSummary } : m,
+        ),
+      );
+    } finally {
+      setIsThinking(false);
+    }
   }
 
   function handleSubmit(e: FormEvent) {
@@ -701,6 +978,7 @@ export default function OnboardingPage() {
     setSaveStatus("saving");
     try {
       await fullPersist();
+      await fetch("/api/chat/ensure-onboarding-greeting", { method: "POST" });
       setSaveStatus("saved");
       router.push("/chat");
     } catch {
@@ -717,49 +995,73 @@ export default function OnboardingPage() {
     !isQuestionTransitioning;
 
   return (
-    <main className="min-h-dvh bg-gradient-to-b from-orange-50/70 via-rose-50/30 to-stone-100/50 px-3 py-4 pb-[max(5.5rem,env(safe-area-inset-bottom))] text-stone-900/90 sm:px-4 sm:py-6 lg:pb-6">
+    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-gradient-to-b from-orange-50/70 via-rose-50/30 to-stone-100/50 px-3 pb-[max(3.25rem,calc(env(safe-area-inset-bottom)+2.5rem))] pt-2 text-stone-900/90 sm:px-4 sm:pt-4 lg:pb-6 lg:pt-6">
       {loadError && loadStatus === "error" && (
-        <p className="mb-2 text-center text-sm text-stone-700/70">{loadError}</p>
+        <p className="mb-2 shrink-0 text-center text-sm text-stone-700/70">{loadError}</p>
       )}
 
       <div
-        className={`mx-auto grid w-full max-w-6xl grid-cols-1 gap-4 lg:grid-cols-[1.02fr_0.98fr] ${
+        className={`mx-auto flex w-full max-w-6xl flex-1 min-h-0 flex-col gap-2 sm:gap-4 lg:grid lg:grid-cols-[1.02fr_0.98fr] lg:gap-4 ${
           loadStatus === "loading" ? "opacity-50" : ""
         }`}
       >
-        <section className="order-1 rounded-3xl border border-stone-200/70 bg-white/82 shadow-sm shadow-stone-200/35 backdrop-blur-sm">
-          <div className="border-b border-stone-100/90 px-4 py-4 sm:px-5">
+        <section className="order-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-stone-200/70 bg-white/82 shadow-sm shadow-stone-200/35 backdrop-blur-sm lg:max-h-[min(82dvh,40rem)] lg:flex-none">
+          <div className="shrink-0 border-b border-stone-100/90 px-4 py-4 sm:px-5">
             <h1 className="mt-1 text-base font-semibold sm:text-lg">
                 开始前的小小了解
             </h1>
           </div>
 
-          <div className="min-h-[40vh] space-y-3 px-3 py-4 sm:min-h-0 sm:px-4">
-            {chatMessages.map((msg) => (
+          <div
+            ref={onboardingScrollRef}
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-y-contain px-3 py-3 [-webkit-overflow-scrolling:touch] sm:px-4 sm:py-4"
+          >
+            {chatMessages.map((msg) => {
+              const aiLongScrollKinds =
+                msg.role === "ai" &&
+                (msg.kind === "question" || msg.kind === "ending");
+              return (
               <div
                 key={msg.id}
                 className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
               >
-                {msg.kind === "typing" ? (
-                  <AiThinkingDots />
-                ) : (
+                {msg.kind === "summary" || msg.kind === "typing" ? (
                   <div
                     ref={(el) => {
-                      if (msg.kind === "summary" && msg.questionId) {
+                      if (msg.questionId) {
                         summaryBubbleRefs.current[msg.questionId] = el;
                       }
                     }}
-                    className={`max-w-[92%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed sm:max-w-[85%] ${
+                    className={`whitespace-pre-wrap ${ONBOARDING_ASSISTANT_BUBBLE}`}
+                  >
+                    {msg.text.trim() === "" ? (
+                      <AssistantTypingDots variant="onboarding" className="py-0.5" />
+                    ) : (
+                      msg.text
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    className={`max-w-[92%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed sm:max-w-[85%] ${
                       msg.role === "user"
-                        ? "bg-stone-800 text-orange-50"
+                        ? "whitespace-pre-wrap bg-stone-800 text-orange-50"
                         : "border border-stone-200/80 bg-orange-50/35 text-stone-900/90"
                     }`}
                   >
-                    {msg.text}
+                    {msg.role === "user" ? (
+                      msg.text
+                    ) : aiLongScrollKinds ? (
+                      <div className="max-h-[min(52dvh,26rem)] overflow-y-auto overscroll-y-contain whitespace-pre-wrap pr-0.5 [-webkit-overflow-scrolling:touch]">
+                        {msg.text}
+                      </div>
+                    ) : (
+                      <span className="whitespace-pre-wrap">{msg.text}</span>
+                    )}
                   </div>
                 )}
               </div>
-            ))}
+            );
+            })}
           </div>
 
           {showOpeningButton && !isOnboardingDone && loadStatus === "ready" && (
@@ -776,24 +1078,71 @@ export default function OnboardingPage() {
 
           {showInput && (
             <div className="space-y-3 border-t border-stone-100/90 px-3 pb-4 pt-3 sm:px-4">
-              {currentQuestion?.hintCards && currentQuestion.hintCards.length > 0 && (
-                <div className="space-y-2.5">
-                  <p className="text-xs leading-relaxed text-stone-700/70">
-                    {currentQuestion.hintLead}
-                  </p>
-                  <div className="flex flex-wrap gap-2.5">
-                    {currentQuestion.hintCards.map((card) => (
-                      <div
-                        key={card}
-                        className="pointer-events-none max-w-full rounded-2xl border border-orange-100/80 bg-gradient-to-br from-orange-50/90 to-amber-50/65 px-3.5 py-2.5 text-xs leading-relaxed text-stone-800/85 shadow-sm shadow-orange-100/40 sm:text-sm"
-                        role="note"
+              {currentQuestion?.hintCards &&
+                currentQuestion.hintCards.length > 0 &&
+                (currentQuestionIndex === LAST_ONBOARDING_QUESTION_INDEX ? (
+                  <div
+                    className={`space-y-2.5 max-md:overflow-y-auto max-md:overscroll-y-contain max-md:pr-0.5 [-webkit-overflow-scrolling:touch] ${
+                      lastQuestionHintExpanded
+                        ? "max-md:max-h-[min(50dvh,24rem)]"
+                        : "max-md:max-h-[min(38dvh,16rem)]"
+                    }`}
+                  >
+                    {currentQuestion.hintLead ? (
+                      <p className="text-xs leading-relaxed text-stone-700/70">
+                        {currentQuestion.hintLead}
+                      </p>
+                    ) : null}
+                    <div className="flex flex-wrap gap-2.5">
+                      {(lastQuestionHintExpanded
+                        ? currentQuestion.hintCards
+                        : currentQuestion.hintCards.slice(
+                            0,
+                            LAST_QUESTION_HINT_INITIAL_VISIBLE_CHIPS,
+                          )
+                      ).map((card) => (
+                        <div
+                          key={card}
+                          className="pointer-events-none max-w-full rounded-2xl border border-orange-100/80 bg-gradient-to-br from-orange-50/90 to-amber-50/65 px-3.5 py-2.5 text-xs leading-relaxed text-stone-800/85 shadow-sm shadow-orange-100/40 sm:text-sm"
+                          role="note"
+                        >
+                          {card}
+                        </div>
+                      ))}
+                    </div>
+                    {currentQuestion.hintCards.length >
+                    LAST_QUESTION_HINT_INITIAL_VISIBLE_CHIPS ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLastQuestionHintExpanded((prev) => !prev)
+                        }
+                        className="text-left text-xs font-normal text-stone-600/95 underline decoration-stone-400/55 underline-offset-[3px] hover:text-stone-800/95"
                       >
-                        {card}
-                      </div>
-                    ))}
+                        {lastQuestionHintExpanded
+                          ? "收起例子"
+                          : "展开更多例子"}
+                      </button>
+                    ) : null}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="space-y-2.5">
+                    <p className="text-xs leading-relaxed text-stone-700/70">
+                      {currentQuestion.hintLead}
+                    </p>
+                    <div className="flex flex-wrap gap-2.5">
+                      {currentQuestion.hintCards.map((card) => (
+                        <div
+                          key={card}
+                          className="pointer-events-none max-w-full rounded-2xl border border-orange-100/80 bg-gradient-to-br from-orange-50/90 to-amber-50/65 px-3.5 py-2.5 text-xs leading-relaxed text-stone-800/85 shadow-sm shadow-orange-100/40 sm:text-sm"
+                          role="note"
+                        >
+                          {card}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
 
               <form onSubmit={handleSubmit} className="space-y-2">
                 <textarea
@@ -801,7 +1150,7 @@ export default function OnboardingPage() {
                   onChange={(e) => setDraftInput(e.target.value)}
                   rows={4}
                   placeholder="你可以慢慢说，我会认真听。"
-                  className="w-full resize-none rounded-2xl border border-stone-200/75 bg-white/94 px-3 py-3 text-base leading-relaxed text-stone-900/90 outline-none ring-orange-200/40 placeholder:text-stone-500/55 focus:ring-2 sm:py-2.5 sm:text-sm"
+                  className="w-full resize-none rounded-2xl border border-stone-200/75 bg-white/94 px-3 py-3 text-base leading-relaxed text-stone-900/90 outline-none ring-orange-200/40 placeholder:text-stone-500/55 focus:ring-2 sm:py-2.5 lg:text-sm"
                   enterKeyHint="send"
                   autoComplete="on"
                 />
@@ -872,9 +1221,11 @@ export default function OnboardingPage() {
               <AiThinkingDots />
             </div>
           )}
+
+          <div ref={onboardingTailRef} className="h-0 shrink-0" aria-hidden />
         </section>
 
-        <div className="order-2 lg:order-2">
+        <div className="order-2 min-h-0 lg:order-2">
           {isLg && (
             <SupportContextPanel
               groupedUser={grouped.user}
@@ -882,6 +1233,7 @@ export default function OnboardingPage() {
               rightPanelContent={rightPanelContent}
               setRightPanelContent={setRightPanelContent}
               setManualEditedModules={setManualEditedModules}
+              aiFilledModules={aiFilledModules}
               highlightModule={highlightModule}
               moduleRefs={moduleRefs}
               isOnboardingDone={isOnboardingDone}
@@ -900,7 +1252,7 @@ export default function OnboardingPage() {
             type="button"
             ref={sheetEntryRef}
             onClick={() => setSheetOpen((o) => !o)}
-            className={`fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-1/2 z-30 min-h-[48px] w-[min(100%-1.5rem,22rem)] -translate-x-1/2 rounded-full border border-stone-200/70 bg-orange-50/92 px-4 py-3 text-sm font-medium text-stone-800/90 shadow-lg shadow-stone-200/35 backdrop-blur-sm transition ${
+            className={`fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-1/2 z-30 min-h-[48px] w-[min(100%-1.25rem,22rem)] -translate-x-1/2 rounded-full border border-stone-200/70 bg-orange-50/92 px-4 py-2.5 text-sm font-medium text-stone-800/90 shadow-lg shadow-stone-200/35 backdrop-blur-sm transition ${
               entryPulse ? "ring-2 ring-orange-200" : "ring-0"
             }`}
           >
@@ -917,6 +1269,7 @@ export default function OnboardingPage() {
               rightPanelContent={rightPanelContent}
               setRightPanelContent={setRightPanelContent}
               setManualEditedModules={setManualEditedModules}
+              aiFilledModules={aiFilledModules}
               highlightModule={highlightModule}
               moduleRefs={moduleRefs}
               isOnboardingDone={isOnboardingDone}

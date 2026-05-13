@@ -121,13 +121,7 @@ export function ProgressLetterReader({
         <p className="mb-3 text-xs text-stone-500">
           {formatDate(letter.periodStart)} - {formatDate(letter.periodEnd)}
         </p>
-        <p
-          className="whitespace-pre-wrap text-[15px] leading-relaxed text-stone-700"
-          style={{
-            // 用更接近手写的字体栈；如果用户环境没有对应字体，会自动 fallback 到 cursive。
-            fontFamily: '"Patrick Hand", "Comic Sans MS", cursive',
-          }}
-        >
+        <p className="font-progress-letter whitespace-pre-wrap text-[15px] leading-relaxed text-stone-700">
           {letter.body}
         </p>
       </div>

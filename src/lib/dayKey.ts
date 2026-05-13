@@ -33,3 +33,15 @@ export function getShanghaiStartOfDay(date: Date = new Date()): Date {
 export function getShanghaiEndOfDay(date: Date = new Date()): Date {
   return new Date(getShanghaiStartOfDay(date).getTime() + 24 * 60 * 60 * 1000);
 }
+
+/** End of the Shanghai calendar day that is `calendarDays` after today's Shanghai date (exclusive next-midnight instant). */
+export function getShanghaiEndOfDayAfterCalendarDays(
+  from: Date = new Date(),
+  calendarDays: number,
+): Date {
+  const todayStart = getShanghaiStartOfDay(from);
+  const targetDayStart = new Date(
+    todayStart.getTime() + calendarDays * 24 * 60 * 60 * 1000,
+  );
+  return getShanghaiEndOfDay(targetDayStart);
+}

@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Ma_Shan_Zheng } from "next/font/google";
 
 import { PwaRegister } from "@/components/pwa/PwaRegister";
 
@@ -13,6 +13,14 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+/** Handwriting-style body for progress letters; loaded for mobile + desktop. */
+const maShanZheng = Ma_Shan_Zheng({
+  weight: "400",
+  variable: "--font-progress-letter",
+  subsets: ["latin"],
+  display: "swap",
 });
 
 const siteUrl =
@@ -48,7 +56,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 5,
+  maximumScale: 1,
+  userScalable: false,
   viewportFit: "cover",
   themeColor: [{ media: "(prefers-color-scheme: light)", color: "#57534e" }],
 };
@@ -61,7 +70,7 @@ export default function RootLayout({
   return (
     <html
       lang="zh-CN"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${maShanZheng.variable} h-full antialiased`}
     >
       <body className="min-h-dvh flex flex-col bg-[#f7f4ef]">
         {children}

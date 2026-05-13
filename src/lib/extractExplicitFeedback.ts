@@ -28,7 +28,7 @@ export async function detectExplicitFeedback(args: {
         {
           role: "system",
           content:
-            '你是严格分类器。判断“用户最新消息”是否是在针对“上一条助手回复”给出明确反馈。明确反馈包括：不满、纠正、指出误解、要求回复方式变化（语气/结构/重点/长短等）。只输出严格 JSON，且只能有这两个键：{"isExplicitFeedback": boolean, "reason": string}。reason 必须是简短中文，不要输出任何额外文本。',
+            '你是严格分类器。判断“用户最新消息”是否是在针对“上一条助手回复”给出明确喜好反馈。明确反馈包括：不满、纠正、指出误解、要求回复方式变化（语气/结构/重点/长短等）。只输出严格 JSON，且只能有这两个键：{"isExplicitFeedback": boolean, "reason": string}。reason 必须是简短中文，不要输出任何额外文本。',
         },
         {
           role: "user",

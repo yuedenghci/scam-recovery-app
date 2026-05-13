@@ -52,7 +52,7 @@ export async function summarizeFeedbackNote(
     "1) 什么地方没有起作用",
     "2) 相关上下文",
     "3) 下一次可能更有效的做法",
-    "要求：1-3句，具体、可执行、避免空话。",
+    "要求：具体、可执行、避免空话。",
   ]);
 
   const client = new OpenAI({

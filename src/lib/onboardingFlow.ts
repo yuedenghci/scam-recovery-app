@@ -131,7 +131,7 @@ export const QUESTIONS: QuestionNode[] = [
     id: "q12-proactive-contact",
     section: "Part 7",
     prompt:
-      "我还想了解一下“主动”这件事。当你没有来找我的时候，你会希望我主动吗？比如我只在你来找我时回应，或者我偶尔主动给你发消息关心你一下。",
+      "我还想了解一下“主动”这件事。当你没有主动和我聊天的时候，你希望我主动和你聊天吗？比如我只在你来找我时回应，或者我偶尔主动先给你发消息。",
     rightPanelKey: "proactiveLevel",
   },
   {
@@ -170,6 +170,11 @@ export const QUESTIONS: QuestionNode[] = [
 
 export function getQuestionById(id: string): QuestionNode | undefined {
   return QUESTIONS.find((q) => q.id === id);
+}
+
+export function questionTargetsProactiveLevel(questionId: string): boolean {
+  const q = getQuestionById(questionId);
+  return q?.rightPanelKey === "proactiveLevel";
 }
 
 export function getModuleTitle(key: RightPanelKey): string {

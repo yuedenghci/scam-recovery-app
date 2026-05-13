@@ -151,24 +151,15 @@ function ContinuationFlowOverlay({
 }: {
   busy: boolean;
   onDismiss: () => Promise<void> | void;
-  onSave: (
-    days: number,
-    reminderEnabled: boolean,
-    reminderTime: string | null,
-  ) => Promise<void> | void;
+  onSave: (days: number) => Promise<void> | void;
 }) {
-  const [stage, setStage] = useState<"invite" | "days" | "remindAsk" | "remindTime">(
-    "invite",
-  );
+  const [stage, setStage] = useState<"invite" | "days">("invite");
   const [rawDays, setRawDays] = useState("5");
-  const [pickedDays, setPickedDays] = useState<number | null>(null);
-  const [timeHm, setTimeHm] = useState("09:30");
 
   const confirmDays = () => {
     const n = Number.parseInt(rawDays.trim(), 10);
     if (!Number.isFinite(n) || n < 1 || n > 30) return;
-    setPickedDays(n);
-    setStage("remindAsk");
+    void onSave(n);
   };
 
   return (
@@ -234,173 +225,14 @@ function ContinuationFlowOverlay({
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => confirmDays()}
+                onClick={() => void confirmDays()}
                 className="w-full rounded-xl bg-stone-600 py-2.5 text-sm font-medium text-stone-50 hover:bg-stone-700 disabled:opacity-60"
-              >
-                确定
-              </button>
-            </div>
-          </>
-        ) : null}
-
-        {stage === "remindAsk" ? (
-          <>
-            <p className="text-sm font-medium text-stone-800">继续这段时间里，要不要轻量提醒一下？</p>
-            <p className="mt-2 text-[12px] leading-relaxed text-stone-500">
-              不是催促，只是把这件事轻轻放在你的时间里。
-            </p>
-            <div className="mt-4 flex flex-col gap-2">
-              <button
-                type="button"
-                disabled={busy || pickedDays == null}
-                onClick={() =>
-                  void onSave(pickedDays ?? 1, false, null)
-                }
-                className="w-full rounded-xl border border-stone-200/80 py-2.5 text-sm text-stone-700 hover:bg-white disabled:opacity-60"
-              >
-                先不用
-              </button>
-              <button
-                type="button"
-                disabled={busy || pickedDays == null}
-                onClick={() => setStage("remindTime")}
-                className="w-full rounded-xl bg-stone-600 py-2.5 text-sm font-medium text-stone-50 hover:bg-stone-700 disabled:opacity-60"
-              >
-                可以，帮我记一下时间
-              </button>
-            </div>
-          </>
-        ) : null}
-
-        {stage === "remindTime" ? (
-          <>
-            <p className="text-sm font-medium text-stone-800">选一个大概时间</p>
-            <p className="mt-2 text-[12px] leading-relaxed text-stone-500">
-              之后会用来实现温和的本地提醒占位。
-            </p>
-            <label
-              htmlFor="dr-continuation-flow-remind-time"
-              className="mt-4 block text-[12px] text-stone-600"
-            >
-              提醒时间
-            </label>
-            <input
-              id="dr-continuation-flow-remind-time"
-              type="time"
-              value={timeHm}
-              onChange={(e) => setTimeHm(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-stone-200/80 bg-white px-3 py-2 text-sm"
-            />
-            <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setStage("remindAsk")}
-                className="flex-1 rounded-xl border border-stone-200/80 py-2 text-sm text-stone-600 hover:bg-white disabled:opacity-60"
-              >
-                返回
-              </button>
-              <button
-                type="button"
-                disabled={busy || pickedDays == null || !timeHm}
-                onClick={() =>
-                  void onSave(pickedDays ?? 1, true, timeHm || null)
-                }
-                className="flex-1 rounded-xl bg-stone-600 py-2 text-sm font-medium text-stone-50 hover:bg-stone-700 disabled:opacity-60"
               >
                 {busy ? "保存中…" : "确定"}
               </button>
             </div>
           </>
         ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ReminderPromptOverlay({
-  busy,
-  onSkip,
-  onSave,
-  title = "需要轻量提醒我一下吗？",
-  description = "不是催促，只是把这件事轻轻放在你的时间里。如果不想，也可以直接进入任务。",
-  confirmLabel = "就用这个时间",
-}: {
-  busy: boolean;
-  onSkip: () => Promise<void> | void;
-  onSave: (enabled: boolean, timeHm: string) => Promise<void> | void;
-  title?: string;
-  description?: string;
-  confirmLabel?: string;
-}) {
-  const [step, setStep] = useState<"ask" | "time">("ask");
-  const [timeHm, setTimeHm] = useState("09:30");
-
-  return (
-    <div className="absolute inset-0 z-40 flex flex-col justify-end bg-stone-900/20 p-3 sm:justify-center sm:p-6">
-      <div
-        className="mx-auto w-full max-w-sm rounded-2xl border border-stone-200/90 bg-[#fcfbf9] px-4 py-4 shadow-xl"
-        role="dialog"
-        aria-label="是否需要提醒"
-      >
-        <p className="text-sm font-medium text-stone-800">{title}</p>
-        <p className="mt-2 text-[12px] leading-relaxed text-stone-500">
-          {description}
-        </p>
-        {step === "ask" ? (
-          <div className="mt-4 flex flex-col gap-2">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void onSkip()}
-              className="w-full rounded-xl border border-stone-200/80 py-2.5 text-sm text-stone-700 hover:bg-white disabled:opacity-60"
-            >
-              先不用
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setStep("time")}
-              className="w-full rounded-xl bg-stone-600 py-2.5 text-sm font-medium text-stone-50 hover:bg-stone-700 disabled:opacity-60"
-            >
-              可以，帮我记一下时间
-            </button>
-          </div>
-        ) : (
-          <div className="mt-4 space-y-3">
-            <label
-              htmlFor="dr-reminder-time"
-              className="block text-[12px] text-stone-600"
-            >
-              选一个大概时间（之后会用来实现温和的本地提醒占位）
-            </label>
-            <input
-              id="dr-reminder-time"
-              type="time"
-              value={timeHm}
-              onChange={(e) => setTimeHm(e.target.value)}
-              className="w-full rounded-xl border border-stone-200/80 bg-white px-3 py-2 text-sm"
-            />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setStep("ask")}
-                className="flex-1 rounded-xl border border-stone-200/80 py-2 text-sm text-stone-600 hover:bg-white disabled:opacity-60"
-              >
-                返回
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void onSave(true, timeHm)}
-                className="flex-1 rounded-xl bg-stone-600 py-2 text-sm font-medium text-stone-50 hover:bg-stone-700 disabled:opacity-60"
-              >
-                {busy ? "保存中…" : confirmLabel}
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -437,9 +269,6 @@ export function DailyRecoveryPanel({
   /** 暂回到引导页（不删数据） */
   const [dismissedToIntro, setDismissedToIntro] = useState(false);
 
-  const [pendingReminderTaskId, setPendingReminderTaskId] = useState<
-    string | null
-  >(null);
   const [customOwnDraft, setCustomOwnDraft] = useState("");
   const resolveDomainLabel = useCallback(() => {
     if (domainChoice === "其他") {
@@ -479,9 +308,6 @@ export function DailyRecoveryPanel({
         : [];
       setTasks(list);
       setMaxTasks(typeof data.maxTasks === "number" ? data.maxTasks : 3);
-      setPendingReminderTaskId((prev) =>
-        prev && list.some((t) => t.id === prev) ? prev : null,
-      );
       setEditingTaskId(null);
       if (list.length === 0) {
         setDismissedToIntro(false);
@@ -497,28 +323,6 @@ export function DailyRecoveryPanel({
 
   useEffect(() => {
     void load();
-  }, [load]);
-
-  useEffect(() => {
-    const onPendingReminder = (e: Event) => {
-      const detail = (e as CustomEvent<{ taskId?: string }>).detail;
-      const id = typeof detail?.taskId === "string" ? detail.taskId : "";
-      if (!id) return;
-      void (async () => {
-        await load();
-        setPendingReminderTaskId(id);
-      })();
-    };
-    window.addEventListener(
-      "daily-recovery-pending-reminder",
-      onPendingReminder,
-    );
-    return () => {
-      window.removeEventListener(
-        "daily-recovery-pending-reminder",
-        onPendingReminder,
-      );
-    };
   }, [load]);
 
   const postAction = async (body: Record<string, unknown>) => {
@@ -538,31 +342,9 @@ export function DailyRecoveryPanel({
     return data;
   };
 
-  const completeReminderSetup = async (enabled: boolean, timeHm: string) => {
-    if (!pendingReminderTaskId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await postAction({
-        action: "setTaskReminder",
-        taskId: pendingReminderTaskId,
-        reminderEnabled: enabled,
-        reminderTime: enabled ? timeHm : "",
-      });
-      setPendingReminderTaskId(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "保存失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const submitContinuationPreferences = async (
     taskId: string,
     continuationDays: number,
-    continuationReminderEnabled: boolean,
-    continuationReminderTime: string | null,
   ) => {
     setBusy(true);
     setError(null);
@@ -571,10 +353,8 @@ export function DailyRecoveryPanel({
         action: "setContinuationPreferences",
         taskId,
         continuationDays,
-        continuationReminderEnabled,
-        continuationReminderTime: continuationReminderEnabled
-          ? continuationReminderTime ?? ""
-          : "",
+        continuationReminderEnabled: false,
+        continuationReminderTime: "",
       });
       await load();
     } catch (e) {
@@ -657,13 +437,11 @@ export function DailyRecoveryPanel({
     setBusy(true);
     setError(null);
     try {
-      const data = await postAction({
+      await postAction({
         action: "saveCustomOwnTask",
         taskText: t,
       });
-      const newId = typeof data.taskId === "string" ? data.taskId : null;
       await load();
-      if (newId) setPendingReminderTaskId(newId);
       setCustomOwnDraft("");
       setPhase("list");
     } catch (e) {
@@ -710,19 +488,14 @@ export function DailyRecoveryPanel({
     setError(null);
     try {
       const label = resolveDomainLabel();
-      const wasNew = !editingTaskId;
-      const data = await postAction({
+      await postAction({
         action: "saveTaskSelection",
         taskId: editingTaskId ?? undefined,
         recoveryDomain: label,
         difficultyNote: difficultyDraft.trim(),
         taskText,
       });
-      const newId = typeof data.taskId === "string" ? data.taskId : null;
       await load();
-      if (wasNew && newId) {
-        setPendingReminderTaskId(newId);
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -1180,18 +953,10 @@ export function DailyRecoveryPanel({
                         {task.currentTaskText ??
                           "暂时还没有具体小步，可以重新设置。"}
                       </p>
-                      {task.reminderEnabled && task.reminderTime ? (
-                        <p className="mt-2 text-[11px] text-stone-500">
-                          已记下的大致提醒时间（占位，后续再接真正提醒）：{" "}
-                          {task.reminderTime}
-                        </p>
-                      ) : null}
                       {task.continuationDays != null ? (
                         <p className="mt-1 text-[11px] text-stone-500">
-                          {task.continuationReminderEnabled &&
-                          task.continuationReminderTime
-                            ? `已记下在这大约 ${task.continuationDays} 天里，想再轻轻提醒一下的时间（${task.continuationReminderTime}，占位）。`
-                            : `已记下这一段小步想再轻轻放在心上大约 ${task.continuationDays} 天。`}
+                          已记下这一段小步想再轻轻放在心上大约 {task.continuationDays}{" "}
+                          天。
                         </p>
                       ) : null}
                       <p
@@ -1313,17 +1078,6 @@ export function DailyRecoveryPanel({
           ) : null}
         </div>
 
-        {phase === "list" && tasks.length > 0 && !dismissedToIntro ? (
-          <div className="shrink-0 border-t border-stone-200/60 bg-[#fbf9f5] px-4 py-3">
-            <button
-              type="button"
-              onClick={() => setDismissedToIntro(true)}
-              className="w-full rounded-lg py-2 text-center text-[11px] text-stone-400 transition-colors hover:bg-stone-200/40 hover:text-stone-600"
-            >
-              关闭日常恢复
-            </button>
-          </div>
-        ) : null}
       </div>
 
       {statusFlow?.kind === "feedback" ? (
@@ -1345,27 +1099,13 @@ export function DailyRecoveryPanel({
           key={`cont-flow-${statusFlow.taskId}`}
           busy={busy}
           onDismiss={() => void dismissContinuation(statusFlow.taskId)}
-          onSave={(days, reminderEnabled, reminderTime) => {
+          onSave={(days) => {
             const tid = statusFlow.taskId;
             void (async () => {
-              await submitContinuationPreferences(
-                tid,
-                days,
-                reminderEnabled,
-                reminderTime,
-              );
+              await submitContinuationPreferences(tid, days);
               setStatusFlow(null);
             })();
           }}
-        />
-      ) : null}
-
-      {pendingReminderTaskId && statusFlow === null ? (
-        <ReminderPromptOverlay
-          key={pendingReminderTaskId}
-          busy={busy}
-          onSkip={() => void completeReminderSetup(false, "")}
-          onSave={(enabled, hm) => void completeReminderSetup(enabled, hm)}
         />
       ) : null}
     </section>

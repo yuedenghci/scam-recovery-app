@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 
+import { AssistantTypingDots } from "@/components/chat/AssistantTypingDots";
 import { DailyRecoveryPanel } from "@/app/chat/DailyRecoveryPanel";
 import { getShanghaiDayKey } from "@/lib/dayKey";
 import { DiaryModal } from "@/components/diary/DiaryModal";
@@ -25,6 +26,7 @@ type ChatMessage = {
   role: ChatRole;
   text: string;
   suggestedAction?: string | null;
+  mode?: string | null;
 };
 
 type ProgressLetter = {
@@ -56,9 +58,15 @@ const FEEDBACK_REASONS = [
   "其他",
 ] as const;
 
-function lastAssistantMessage(messages: readonly ChatMessage[]): ChatMessage | null {
+/** Shown in the assistant bubble when a stream fails before usable text arrives. */
+const ASSISTANT_STREAM_FAIL_HINT = "可以再说一次吗";
+
+function lastSubstantiveAssistantMessage(
+  messages: readonly ChatMessage[],
+): ChatMessage | null {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") return messages[i];
+    const m = messages[i];
+    if (m.role === "assistant" && m.text.trim() !== "") return m;
   }
   return null;
 }
@@ -70,6 +78,71 @@ function generateLocalChatMessageId(): string {
     return c.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+type SseHandler = {
+  onDelta?: (text: string) => void;
+  onDone?: (data: unknown) => void;
+  onError?: (data: unknown) => void;
+};
+
+/**
+ * Parse SSE from a fetch body (same framing as `/api/chat`).
+ * Returns whether a terminal `done` event was seen.
+ */
+async function readSseStream(
+  body: ReadableStream<Uint8Array>,
+  handlers: SseHandler,
+): Promise<{ sawDone: boolean; terminal: "done" | "error" | null }> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let sawDone = false;
+  let terminal: "done" | "error" | null = null;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      for (const rawEvent of events) {
+        const lines = rawEvent.split("\n");
+        const eventLine = lines.find((line) => line.startsWith("event: "));
+        const dataLine = lines.find((line) => line.startsWith("data: "));
+        if (!eventLine || !dataLine) continue;
+        const event = eventLine.replace("event: ", "").trim();
+        let data: unknown;
+        try {
+          data = JSON.parse(dataLine.replace("data: ", ""));
+        } catch {
+          continue;
+        }
+        if (event === "delta") {
+          const delta =
+            typeof data === "object" &&
+            data !== null &&
+            "text" in data &&
+            typeof (data as { text: unknown }).text === "string"
+              ? (data as { text: string }).text
+              : "";
+          if (delta) handlers.onDelta?.(delta);
+        }
+        if (event === "done") {
+          sawDone = true;
+          terminal = "done";
+          handlers.onDone?.(data);
+        }
+        if (event === "error") {
+          terminal = "error";
+          handlers.onError?.(data);
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return { sawDone, terminal };
 }
 
 function FeedbackIconButton({ onOpen }: { onOpen: () => void }) {
@@ -225,7 +298,7 @@ function MultiSelectOptionGroupWithOther({
             onChange={(e) => onOtherTextChange(e.target.value)}
             rows={3}
             placeholder={otherPlaceholder}
-            className="w-full resize-none rounded-xl border border-stone-200/80 bg-white px-3 py-2.5 text-[15px] text-stone-800 outline-none focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.1)]"
+            className="w-full resize-none rounded-xl border border-stone-200/80 bg-white px-3 py-2.5 text-base text-stone-800 outline-none focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.1)] sm:text-[15px]"
           />
         </div>
       ) : null}
@@ -306,6 +379,7 @@ export default function ChatPage() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [currentStateLoaded, setCurrentStateLoaded] = useState(false);
   const [chatHistoryLoaded, setChatHistoryLoaded] = useState(false);
+  const [onboardingEnsureDone, setOnboardingEnsureDone] = useState(false);
   const [currentStateRequired, setCurrentStateRequired] = useState(false);
   const [savedCurrentState, setSavedCurrentState] = useState<CurrentStateSaved>(
     EMPTY_CURRENT_STATE_SAVED,
@@ -325,7 +399,6 @@ export default function ChatPage() {
   const [feedbackMessage, setFeedbackMessage] = useState<ChatMessage | null>(null);
   const [feedbackReasons, setFeedbackReasons] = useState<string[]>([]);
   const [feedbackOtherText, setFeedbackOtherText] = useState("");
-  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackFormError, setFeedbackFormError] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -339,11 +412,41 @@ export default function ChatPage() {
   const [progressLetters, setProgressLetters] = useState<ProgressLetter[]>([]);
   const [selectedLetter, setSelectedLetter] = useState<ProgressLetter | null>(null);
   const chatScrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const chatScrollRaf = useRef<number | null>(null);
+  const prevSavedCurrentStateRef = useRef<CurrentStateSaved>(EMPTY_CURRENT_STATE_SAVED);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuPanelRef = useRef<HTMLDivElement | null>(null);
   const moreMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const inputTextRef = useRef("");
+  const proactiveFetchStartedRef = useRef(false);
 
-  const latestAssistant = lastAssistantMessage(messages);
+  const latestAssistant = lastSubstantiveAssistantMessage(messages);
+
+  useEffect(() => {
+    inputTextRef.current = inputText;
+  }, [inputText]);
+
+  useEffect(() => {
+    prevSavedCurrentStateRef.current = savedCurrentState;
+  }, [savedCurrentState]);
+
+  useEffect(() => {
+    if (chatScrollRaf.current != null) {
+      cancelAnimationFrame(chatScrollRaf.current);
+    }
+    chatScrollRaf.current = requestAnimationFrame(() => {
+      chatScrollRaf.current = null;
+      const el = chatScrollAreaRef.current;
+      if (!el) return;
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    });
+    return () => {
+      if (chatScrollRaf.current != null) {
+        cancelAnimationFrame(chatScrollRaf.current);
+        chatScrollRaf.current = null;
+      }
+    };
+  }, [messages, loading]);
 
   const openDailyRecoveryMobileOrFocusSidebar = useCallback(() => {
     if (typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches) {
@@ -390,11 +493,17 @@ export default function ChatPage() {
             typeof suggestedRaw === "string" && suggestedRaw.trim() !== ""
               ? suggestedRaw.trim()
               : null;
+          const modeRaw = o.mode;
+          const mode =
+            typeof modeRaw === "string" && modeRaw.trim() !== ""
+              ? modeRaw.trim()
+              : null;
           mapped.push({
             id,
             role,
             text,
             ...(suggestedAction ? { suggestedAction } : {}),
+            ...(mode ? { mode } : {}),
           });
         }
 
@@ -405,6 +514,45 @@ export default function ChatPage() {
         // Fallback: greeting effect runs after `chatHistoryLoaded`.
       } finally {
         setChatHistoryLoaded(true);
+      }
+
+      try {
+        const r2 = await fetch("/api/chat/ensure-onboarding-greeting", {
+          method: "POST",
+        });
+        const j2 = (await r2.json().catch(() => ({}))) as {
+          ok?: boolean;
+          created?: boolean;
+          message?: { id?: string; role?: string; text?: string };
+        };
+        if (
+          r2.ok &&
+          j2.created &&
+          j2.message &&
+          typeof j2.message.id === "string" &&
+          j2.message.role === "assistant" &&
+          typeof j2.message.text === "string" &&
+          j2.message.text.trim() !== ""
+        ) {
+          const id = j2.message.id;
+          const text = j2.message.text;
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === id)) return prev;
+            return [
+              ...prev,
+              {
+                id,
+                role: "assistant" as const,
+                text,
+                mode: "onboarding_greeting",
+              },
+            ];
+          });
+        }
+      } catch {
+        // Non-fatal: proactive / greeting logic stays conservative.
+      } finally {
+        setOnboardingEnsureDone(true);
       }
     })();
   }, []);
@@ -463,7 +611,7 @@ export default function ChatPage() {
   }, [markLetterRead, progressLetters]);
 
   const openFeedbackForLatestAssistant = useCallback(() => {
-    const target = lastAssistantMessage(messages);
+    const target = lastSubstantiveAssistantMessage(messages);
     if (!target) return;
     setFeedbackMessage(target);
     setFeedbackReasons([]);
@@ -472,21 +620,108 @@ export default function ChatPage() {
     setFeedbackOpen(true);
   }, [messages]);
 
+  useEffect(() => {
+    if (!chatHistoryLoaded || !onboardingEnsureDone || panelOpen) return;
+
+    const run = async () => {
+      await Promise.resolve();
+      if (inputTextRef.current.trim() !== "") return;
+      if (proactiveFetchStartedRef.current) return;
+      proactiveFetchStartedRef.current = true;
+
+      try {
+        const res = await fetch("/api/proactive-opening", { method: "POST" });
+        const contentType = res.headers.get("content-type") ?? "";
+
+        if (contentType.includes("application/json")) {
+          try {
+            await res.json();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+
+        if (!res.ok || !contentType.includes("text/event-stream") || !res.body) {
+          return;
+        }
+
+        const localAssistantId = `local-assistant-${generateLocalChatMessageId()}`;
+        setMessages((prev) => [
+          ...prev,
+          { id: localAssistantId, role: "assistant", text: "" },
+        ]);
+
+        const { sawDone, terminal } = await readSseStream(res.body, {
+          onDelta: (text) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === localAssistantId
+                  ? { ...m, text: m.text + text }
+                  : m,
+              ),
+            );
+          },
+          onDone: (data) => {
+            const payload = data as { messageId?: string };
+            const mid =
+              typeof payload.messageId === "string"
+                ? payload.messageId.trim()
+                : "";
+            if (!mid) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === localAssistantId
+                  ? { ...m, id: mid, mode: "proactive_opening" }
+                  : m,
+              ),
+            );
+          },
+        });
+
+        if (!sawDone || terminal === "error") {
+          setMessages((prev) => {
+            const t = prev.find((m) => m.id === localAssistantId);
+            if (!t) return prev;
+            if (t.text.trim() === "") {
+              return prev.filter((m) => m.id !== localAssistantId);
+            }
+            return prev.map((m) =>
+              m.id === localAssistantId
+                ? { ...m, text: ASSISTANT_STREAM_FAIL_HINT }
+                : m,
+            );
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    void run();
+  }, [chatHistoryLoaded, onboardingEnsureDone, panelOpen]);
+
   const handleSend = useCallback(async () => {
     const trimmed = inputText.trim();
     if (!trimmed) return;
 
     setErrorMessage(null);
 
+    const userMsg: ChatMessage = {
+      id: `local-${generateLocalChatMessageId()}`,
+      role: "user",
+      text: trimmed,
+    };
+    const localAssistantId = `local-assistant-${generateLocalChatMessageId()}`;
+
     try {
       setLoading(true);
 
-      const userMsg: ChatMessage = {
-        id: `local-${generateLocalChatMessageId()}`,
-        role: "user",
-        text: trimmed,
-      };
-      setMessages((prev) => [...prev, userMsg]);
+      setMessages((prev) => [
+        ...prev,
+        userMsg,
+        { id: localAssistantId, role: "assistant", text: "" },
+      ]);
       setInputText("");
 
       const res = await fetch("/api/chat", {
@@ -498,29 +733,33 @@ export default function ChatPage() {
       const contentType = res.headers.get("content-type") ?? "";
 
       if (!res.ok) {
-        let errText = "发送失败，请重试";
         try {
-          const errBody = (await res.json()) as { error?: unknown };
-          if (typeof errBody.error === "string" && errBody.error.trim() !== "") {
-            errText = errBody.error.trim();
-          }
+          await res.json();
         } catch {
           // ignore
         }
-        setErrorMessage(errText);
+        setErrorMessage(null);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === localAssistantId
+              ? { ...m, text: ASSISTANT_STREAM_FAIL_HINT }
+              : m,
+          ),
+        );
         return;
       }
 
       if (!contentType.includes("text/event-stream") || !res.body) {
-        setErrorMessage("发送失败，请重试");
+        setErrorMessage(null);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === localAssistantId
+              ? { ...m, text: ASSISTANT_STREAM_FAIL_HINT }
+              : m,
+          ),
+        );
         return;
       }
-
-      const localAssistantId = `local-assistant-${generateLocalChatMessageId()}`;
-      setMessages((prev) => [
-        ...prev,
-        { id: localAssistantId, role: "assistant", text: "" },
-      ]);
 
       const pollSuggestedAction = (assistantId: string) => {
         void (async () => {
@@ -568,125 +807,99 @@ export default function ChatPage() {
         })();
       };
 
-      let streamCompletedOk = false;
-
       try {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
+        const { sawDone, terminal } = await readSseStream(res.body, {
+          onDelta: (delta) =>
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === localAssistantId ? { ...m, text: m.text + delta } : m,
+              ),
+            ),
+          onDone: (data) => {
+            const d = data as {
+              messageId?: unknown;
+              suggestedAction?: unknown;
+            };
+            const resolvedId =
+              typeof d.messageId === "string" ? d.messageId : null;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+            const sug =
+              typeof d.suggestedAction === "string" &&
+              d.suggestedAction.trim() !== ""
+                ? d.suggestedAction.trim()
+                : null;
 
-          buffer += decoder.decode(value, { stream: true });
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== localAssistantId) return m;
 
-          const events = buffer.split("\n\n");
-          buffer = events.pop() ?? "";
-
-          for (const rawEvent of events) {
-            const lines = rawEvent.split("\n");
-
-            const eventLine = lines.find((line) => line.startsWith("event: "));
-            const dataLine = lines.find((line) => line.startsWith("data: "));
-
-            if (!eventLine || !dataLine) continue;
-
-            const event = eventLine.replace("event: ", "").trim();
-
-            let data: unknown;
-            try {
-              data = JSON.parse(dataLine.replace("data: ", ""));
-            } catch {
-              continue;
-            }
-
-            if (event === "delta") {
-              const delta =
-                typeof data === "object" &&
-                data !== null &&
-                "text" in data &&
-                typeof (data as { text: unknown }).text === "string"
-                  ? (data as { text: string }).text
-                  : "";
-
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === localAssistantId ? { ...m, text: m.text + delta } : m,
-                ),
-              );
-            }
-
-            if (event === "done") {
-              streamCompletedOk = true;
-              const d = data as {
-                messageId?: unknown;
-                suggestedAction?: unknown;
-                reply?: unknown;
-              };
-              const resolvedId =
-                typeof d.messageId === "string" ? d.messageId : null;
-
-              const finalReply =
-                typeof d.reply === "string" ? d.reply.trim() : null;
-
-              const sug =
-                typeof d.suggestedAction === "string" &&
-                d.suggestedAction.trim() !== ""
-                  ? d.suggestedAction.trim()
-                  : null;
-
-              setMessages((prev) =>
-                prev.map((m) => {
-                  if (m.id !== localAssistantId) return m;
-
-                  const nextId = resolvedId ?? m.id;
-                  const nextText =
-                    finalReply !== null && finalReply !== "" ? finalReply : m.text;
-
-                  if (sug) {
-                    return {
-                      id: nextId,
-                      role: "assistant" as const,
-                      text: nextText,
-                      suggestedAction: sug,
-                    };
-                  }
+                const nextId = resolvedId ?? m.id;
+                if (sug) {
                   return {
                     id: nextId,
                     role: "assistant" as const,
-                    text: nextText,
+                    text: m.text,
+                    suggestedAction: sug,
                   };
-                }),
-              );
+                }
+                return {
+                  id: nextId,
+                  role: "assistant" as const,
+                  text: m.text,
+                };
+              }),
+            );
 
-              const pollId = resolvedId ?? localAssistantId;
-              pollSuggestedAction(pollId);
-            }
+            const pollId = resolvedId ?? localAssistantId;
+            pollSuggestedAction(pollId);
+          },
+          onError: () => {
+            setErrorMessage(null);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === localAssistantId
+                  ? {
+                      ...m,
+                      text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
+                    }
+                  : m,
+              ),
+            );
+          },
+        });
 
-            if (event === "error") {
-              setErrorMessage("发送失败，请重试");
-              setMessages((prev) =>
-                prev.filter((m) => m.id !== localAssistantId),
-              );
-            }
-          }
-        }
-
-        if (!streamCompletedOk) {
-          setErrorMessage("发送失败，请重试");
+        if (!sawDone && terminal !== "error") {
+          setErrorMessage(null);
           setMessages((prev) =>
-            prev.filter((m) => m.id !== localAssistantId),
+            prev.map((m) =>
+              m.id === localAssistantId
+                ? {
+                    ...m,
+                    text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
+                  }
+                : m,
+            ),
           );
         }
       } catch {
-        setErrorMessage("发送失败，请重试");
+        setErrorMessage(null);
         setMessages((prev) =>
-          prev.filter((m) => m.id !== localAssistantId),
+          prev.map((m) =>
+            m.id === localAssistantId
+              ? { ...m, text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT }
+              : m,
+          ),
         );
       }
     } catch {
-      setErrorMessage("发送失败，请重试");
+      setErrorMessage(null);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === localAssistantId
+            ? { ...m, text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT }
+            : m,
+        ),
+      );
     } finally {
       setLoading(false);
     }
@@ -775,13 +988,6 @@ export default function ChatPage() {
         }
         showToast("success", "已加入日常恢复");
         const taskId = typeof payload.taskId === "string" ? payload.taskId : "";
-        if (taskId) {
-          window.dispatchEvent(
-            new CustomEvent("daily-recovery-pending-reminder", {
-              detail: { taskId },
-            }),
-          );
-        }
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "添加失败");
       }
@@ -818,41 +1024,158 @@ export default function ChatPage() {
       return;
     }
     setFeedbackFormError(null);
-    setFeedbackSubmitting(true);
+
+    const snapshot = {
+      messageId: feedbackMessage.id,
+      assistantReplyText: feedbackMessage.text,
+      selectedReasons: [...feedbackReasons],
+      otherText: includesOther ? feedbackOtherText.trim() : "",
+    };
+
+    closeFeedbackPanel();
+    showToast("success", "反馈已提交");
+
+    const localAssistantId = `local-feedback-${generateLocalChatMessageId()}`;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: localAssistantId,
+        role: "assistant",
+        text: "",
+        suggestedAction: null,
+      },
+    ]);
+
     try {
       const res = await fetch("/api/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messageId: feedbackMessage.id,
-          selectedReasons: feedbackReasons,
-          otherText: includesOther ? feedbackOtherText.trim() : "",
-          assistantReplyText: feedbackMessage.text,
-          currentStateSnapshot: null,
+          messageId: snapshot.messageId,
+          selectedReasons: snapshot.selectedReasons,
+          otherText: snapshot.otherText,
+          assistantReplyText: snapshot.assistantReplyText,
         }),
       });
+
       if (!res.ok) {
-        let message = "提交失败，请稍后再试";
-        try {
-          const data = (await res.json()) as { error?: string };
-          if (typeof data.error === "string" && data.error) message = data.error;
-        } catch {
-          /* ignore */
-        }
-        throw new Error(message);
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        const message =
+          typeof data.error === "string" && data.error
+            ? data.error
+            : "提交失败，请稍后再试";
+        showToast("error", message);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === localAssistantId
+              ? { ...m, text: ASSISTANT_STREAM_FAIL_HINT }
+              : m,
+          ),
+        );
+        return;
       }
-      closeFeedbackPanel();
-      showToast("success", "反馈已提交");
-    } catch (e) {
-      showToast("error", e instanceof Error ? e.message : "提交失败，请稍后再试");
-    } finally {
-      setFeedbackSubmitting(false);
+
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/event-stream") || !res.body) {
+        showToast("error", "提交失败，请稍后再试");
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === localAssistantId
+              ? { ...m, text: ASSISTANT_STREAM_FAIL_HINT }
+              : m,
+          ),
+        );
+        return;
+      }
+
+      const { sawDone, terminal } = await readSseStream(res.body, {
+        onDelta: (delta) =>
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === localAssistantId ? { ...m, text: m.text + delta } : m,
+            ),
+          ),
+        onDone: (data) => {
+          const d = data as {
+            revisedMessageId?: unknown;
+            revisedText?: unknown;
+          };
+          const revisedMessageId =
+            typeof d.revisedMessageId === "string" ? d.revisedMessageId : null;
+          const revisedText =
+            typeof d.revisedText === "string" ? d.revisedText.trim() : "";
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== localAssistantId) return m;
+              const nextId = revisedMessageId ?? m.id;
+              return {
+                id: nextId,
+                role: "assistant" as const,
+                text: revisedText || m.text,
+                suggestedAction: null,
+              };
+            }),
+          );
+        },
+        onError: (data) => {
+          const msg =
+            typeof data === "object" &&
+            data !== null &&
+            "message" in data &&
+            typeof (data as { message: unknown }).message === "string"
+              ? (data as { message: string }).message.trim()
+              : "修订回复失败，请稍后再试";
+          showToast("error", msg || "修订回复失败，请稍后再试");
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === localAssistantId
+                ? {
+                    ...m,
+                    text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
+                    suggestedAction: null,
+                  }
+                : m,
+            ),
+          );
+        },
+      });
+
+      if (!sawDone && terminal !== "error") {
+        showToast("error", "提交失败，请稍后再试");
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === localAssistantId
+              ? {
+                  ...m,
+                  text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
+                  suggestedAction: null,
+                }
+              : m,
+          ),
+        );
+      }
+    } catch {
+      showToast("error", "提交失败，请稍后再试");
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === localAssistantId
+            ? {
+                ...m,
+                text: m.text.trim() || ASSISTANT_STREAM_FAIL_HINT,
+                suggestedAction: null,
+              }
+            : m,
+        ),
+      );
     }
   }, [
     closeFeedbackPanel,
     feedbackMessage,
     feedbackOtherText,
     feedbackReasons,
+    setMessages,
     showToast,
   ]);
 
@@ -902,42 +1225,50 @@ export default function ChatPage() {
     );
     const spatialStored = formatMultiValueForStorage(spatial, spatialOtherTrim);
 
-    setSaving(true);
-    try {
-      const res = await fetch("/api/current-state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          emotional: emotionalStored,
-          physical: physicalStored,
-          spatial: spatialStored,
-        }),
-      });
-      if (!res.ok) {
-        let message = "保存失败，请稍后再试";
-        try {
-          const data = (await res.json()) as { error?: string };
-          if (typeof data.error === "string" && data.error) message = data.error;
-        } catch {
-          /* ignore */
+    const previousSaved = prevSavedCurrentStateRef.current;
+    setSavedCurrentState({
+      emotional: emotionalStored,
+      physical: physicalStored,
+      spatial: spatialStored,
+    });
+    setCurrentStateRequired(false);
+    setCurrentStateLastSavedAt(new Date().toISOString());
+    setPanelOpen(false);
+    showToast("success", "当前状态已保存");
+    setSaving(false);
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/current-state", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            emotional: emotionalStored,
+            physical: physicalStored,
+            spatial: spatialStored,
+          }),
+        });
+        if (!res.ok) {
+          let message = "保存失败，请稍后重试";
+          try {
+            const data = (await res.json()) as { error?: string };
+            if (typeof data.error === "string" && data.error) message = data.error;
+          } catch {
+            /* ignore */
+          }
+          throw new Error(message);
         }
-        throw new Error(message);
+        void loadProgress();
+      } catch (e) {
+        setSavedCurrentState(previousSaved);
+        setCurrentStateRequired(true);
+        setPanelOpen(true);
+        showToast(
+          "error",
+          e instanceof Error ? e.message : "保存失败，请稍后重试",
+        );
       }
-      setSavedCurrentState({
-        emotional: emotionalStored,
-        physical: physicalStored,
-        spatial: spatialStored,
-      });
-      void loadProgress();
-      setCurrentStateRequired(false);
-      setCurrentStateLastSavedAt(new Date().toISOString());
-      setPanelOpen(false);
-      showToast("success", "当前状态已保存");
-    } catch (e) {
-      showToast("error", e instanceof Error ? e.message : "保存失败，请稍后再试");
-    } finally {
-      setSaving(false);
-    }
+    })();
   }, [draftCurrentState, loadProgress, showToast]);
 
   useEffect(() => {
@@ -1012,21 +1343,21 @@ export default function ChatPage() {
   }, [moreMenuOpen]);
 
   useEffect(() => {
-    if (!currentStateLoaded || !chatHistoryLoaded) return;
+    if (!currentStateLoaded || !chatHistoryLoaded || !onboardingEnsureDone) return;
     if (panelOpen) return;
     if (messages.length !== 0) return;
     // 先自然打招呼，再让用户开始聊。
     setMessages([
       { id: "assistant-greeting-local", role: "assistant", text: "嗨，今天想从哪里开始聊呢？" },
     ]);
-  }, [currentStateLoaded, chatHistoryLoaded, panelOpen, messages.length]);
+  }, [currentStateLoaded, chatHistoryLoaded, onboardingEnsureDone, panelOpen, messages.length]);
 
   return (
     <div
       lang="zh-CN"
       className="flex h-dvh min-h-dvh flex-col bg-[#f7f4ef] text-stone-800 lg:flex-row"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="border-b border-stone-200/60 bg-[#fbf9f5]/90 px-2 py-1.5 sm:px-3 sm:py-2 lg:px-4 lg:py-2.5">
         <div className="mx-auto max-w-lg">
           <div className="grid grid-cols-4 gap-1.5 lg:flex lg:flex-nowrap lg:justify-start lg:gap-2 lg:overflow-x-auto lg:pb-px [scrollbar-width:none] lg:[&::-webkit-scrollbar]:hidden">
@@ -1115,7 +1446,14 @@ export default function ChatPage() {
                 className="max-w-[88%] self-start flex flex-col gap-1.5"
               >
                 <div className="rounded-2xl rounded-tl-md border border-stone-200/70 bg-white/90 px-4 py-3 text-[15px] leading-relaxed text-stone-700 shadow-sm">
-                  {msg.text}
+                  {msg.text.trim() === "" ? (
+                    <>
+                      <span className="sr-only">对方正在输入</span>
+                      <AssistantTypingDots variant="chatBubble" />
+                    </>
+                  ) : (
+                    msg.text
+                  )}
                 </div>
                 <div className="flex flex-col gap-1.5 pl-0.5">
                   {msg.suggestedAction ? (
@@ -1181,7 +1519,7 @@ export default function ChatPage() {
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 placeholder="想说什么都可以……"
-                className="max-lg:shadow-sm min-h-[48px] min-w-0 flex-1 rounded-2xl border border-stone-200/85 bg-white/95 px-4 py-3 text-[16px] text-stone-800 placeholder:text-stone-400 outline-none ring-0 transition-shadow focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.12)] sm:text-[15px] lg:border-stone-200/80 lg:bg-white"
+                className="max-lg:shadow-sm min-h-[48px] min-w-0 flex-1 rounded-2xl border border-stone-200/85 bg-white/95 px-4 py-3 text-base text-stone-800 placeholder:text-stone-400 outline-none ring-0 transition-shadow focus:border-stone-300 focus:shadow-[0_0_0_3px_rgba(120,113,108,0.12)] lg:border-stone-200/80 lg:bg-white lg:text-[15px]"
                 autoComplete="off"
               />
               <button
@@ -1189,15 +1527,9 @@ export default function ChatPage() {
                 disabled={loading}
                 className="min-h-[48px] min-w-[3.75rem] shrink-0 rounded-2xl bg-stone-600 px-3.5 py-3 text-[15px] font-semibold text-stone-50 transition-colors hover:bg-stone-700 active:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60 max-lg:active:scale-[0.98] sm:min-w-[4rem] sm:px-4 lg:min-h-0 lg:text-sm lg:font-medium"
                 aria-busy={loading || undefined}
+                aria-label={loading ? "对方正在输入" : "发送"}
               >
-                {loading ? (
-                  <>
-                    <span className="lg:hidden">发送</span>
-                    <span className="hidden lg:inline">发送中…</span>
-                  </>
-                ) : (
-                  "发送"
-                )}
+                发送
               </button>
             </div>
           </div>
@@ -1233,7 +1565,7 @@ export default function ChatPage() {
             onOpenLatestUnread={openLatestUnreadLetter}
           />
           {progressHasUnread ? (
-            <p className="pointer-events-none pb-1 pr-1 text-[11px] leading-snug text-stone-600">
+            <p className="font-progress-letter pointer-events-none pb-1 pr-1 text-[11px] leading-snug text-stone-600">
               收到一封你的来信，请查收～
             </p>
           ) : null}
@@ -1387,7 +1719,7 @@ export default function ChatPage() {
           className="fixed inset-0 z-[52] flex items-end justify-center bg-stone-900/20 p-0 sm:items-center sm:p-4"
           role="presentation"
           onClick={() => {
-            if (!feedbackSubmitting) closeFeedbackPanel();
+            closeFeedbackPanel();
           }}
         >
           <div
@@ -1403,9 +1735,8 @@ export default function ChatPage() {
               </span>
               <button
                 type="button"
-                disabled={feedbackSubmitting}
                 onClick={closeFeedbackPanel}
-                className="shrink-0 rounded-lg px-2 py-1 text-sm text-stone-500 transition-colors hover:bg-stone-200/50 hover:text-stone-700 disabled:opacity-50"
+                className="shrink-0 rounded-lg px-2 py-1 text-sm text-stone-500 transition-colors hover:bg-stone-200/50 hover:text-stone-700"
               >
                 取消
               </button>
@@ -1448,11 +1779,10 @@ export default function ChatPage() {
 
             <button
               type="button"
-              disabled={feedbackSubmitting}
-              onClick={handleFeedbackSubmit}
-              className="mt-4 w-full rounded-2xl bg-stone-600 py-3 text-sm font-medium text-stone-50 transition-colors hover:bg-stone-700 active:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => void handleFeedbackSubmit()}
+              className="mt-4 w-full rounded-2xl bg-stone-600 py-3 text-sm font-medium text-stone-50 transition-colors hover:bg-stone-700 active:bg-stone-800"
             >
-              {feedbackSubmitting ? "提交中…" : "提交反馈"}
+              提交反馈
             </button>
           </div>
         </div>

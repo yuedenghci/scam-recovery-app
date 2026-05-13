@@ -16,12 +16,13 @@ export async function GET() {
     const rows = await prisma.message.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
-      take: 10,
+      take: 80,
       select: {
         id: true,
         role: true,
         content: true,
         suggestedAction: true,
+        mode: true,
         createdAt: true,
       },
     });
@@ -35,12 +36,17 @@ export async function GET() {
         typeof row.suggestedAction === "string" && row.suggestedAction.trim() !== ""
           ? row.suggestedAction.trim()
           : null;
+      const mode =
+        typeof row.mode === "string" && row.mode.trim() !== ""
+          ? row.mode.trim()
+          : null;
       return [
         {
           id: row.id,
           role,
           text: row.content,
           ...(sug ? { suggestedAction: sug } : {}),
+          ...(mode ? { mode } : {}),
           createdAt: row.createdAt.toISOString(),
         },
       ];

@@ -24,6 +24,11 @@ body {
   padding-right: env(safe-area-inset-right);
 }
 
+/* Progress “来信”正文与蝴蝶旁标语：与 layout 中 --font-progress-letter 配套 */
+.font-progress-letter {
+  font-family: var(--font-progress-letter), "Comic Sans MS", cursive;
+}
+
 /* 减少双击缩放延迟、改善可点击控件在触控屏上的手感 */
 @media (pointer: coarse) {
   button,
